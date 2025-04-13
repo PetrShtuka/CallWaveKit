@@ -1,0 +1,25 @@
+PODS:
+  - MobileVLCKit (3.3.16.3)
+  - OpenSSL-Universal (1.0.2.13)
+  - pjsip (2.7.1):
+    - OpenSSL-Universal
+
+DEPENDENCIES:
+  - MobileVLCKit (= 3.3.16.3)
+  - pjsip
+
+SPEC REPOS:
+  https://github.com/CocoaPods/Specs.git:
+    - OpenSSL-Universal
+    - pjsip
+  trunk:
+    - MobileVLCKit
+
+SPEC CHECKSUMS:
+  MobileVLCKit: 2b408a9c5cc327353afab418fafbc942780b248a
+  OpenSSL-Universal: 401888162f11c33ebbd46f782d9229da35c61327
+  pjsip: 0f29a83c148cead6c208e46667c2dfdad1991e97
+
+PODFILE CHECKSUM: d12dbd404fea8ce64a227129ef35e0bff4167909
+
+COCOAPODS: 1.16.2
