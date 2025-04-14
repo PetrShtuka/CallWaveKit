@@ -10,7 +10,7 @@ A simple application in Swift 4.2 using the PJSIP library.
 
 ## Run
 
-**SIOSP** use cocoapods for dependency management.
+**Majore DOM SIP** use cocoapods for dependency management.
 Run the following command :
 
 ```ruby
