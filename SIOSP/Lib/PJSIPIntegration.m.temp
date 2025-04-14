@@ -88,12 +88,7 @@ static void registerPJSIPThread(const char *name) {
     }
 }
 
-@implementation PJSIPIntegration {
-    // Приватные переменные экземпляра
-    void (^incomingCall)(void);
-    void (^startCall)(void);
-    void (^endCall)(void);
-}
+@implementation PJSIPIntegration
 
 + (instancetype)sharedInstance {
     static dispatch_once_t once;
@@ -399,18 +394,18 @@ static void registerPJSIPThread(const char *name) {
 
 - (void) configureIncomingCall:(void (^)(void))block {
     registerPJSIPThread("ConfigureIncomingCall");
-    self->incomingCall = [block copy];
+    incomingCall = [block copy];
     NSLog(@"✅ Обработчик входящего звонка настроен");
 }
 
 - (void) configureStarCall:(void (^)(void))block {
     registerPJSIPThread("ConfigureStartCall");
-    self->startCall = [block copy];
+    startCall = [block copy];
 }
 
 - (void) configureEndCall:(void (^)(void))block {
     registerPJSIPThread("ConfigureEndCall");
-    self->endCall = [block copy];
+    endCall = [block copy];
 }
 
 - (BOOL) acceptCall {
@@ -803,14 +798,14 @@ static void onIncomingCall(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_rx_
     
     // Проверка на уже отображаемый CallKit - важно проверить наличие активных звонков в CallKit
     PJSIPIntegration *pjsip = [PJSIPIntegration sharedInstance];
-    BOOL alreadyShownInCallKit = (pjsip.currentCallUUID != nil || pjsip.activeCalls.count > 0);
+    BOOL alreadyShownInCallKit = (pjsip->currentCallUUID != nil || pjsip->activeCalls.count > 0);
     
     if (alreadyShownInCallKit) {
         NSLog(@"📱 SIP: Звонок уже отображен в CallKit, только обновляем ID");
         
         // Ищем активный звонок в CallKit
-        for (NSString *uuid in pjsip.activeCalls) {
-            NSDictionary *callInfo = [pjsip.activeCalls objectForKey:uuid];
+        for (NSString *uuid in pjsip->activeCalls) {
+            NSDictionary *callInfo = [pjsip->activeCalls objectForKey:uuid];
             NSNumber *callIdNumber = [callInfo objectForKey:@"call_id"];
             
             // Если найден звонок с invalid ID или с тем же ID, обновляем его
@@ -822,11 +817,11 @@ static void onIncomingCall(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_rx_
                 dispatch_async(dispatch_get_main_queue(), ^{
                     NSMutableDictionary *mutableCallInfo = [NSMutableDictionary dictionaryWithDictionary:callInfo];
                     [mutableCallInfo setObject:@(call_id) forKey:@"call_id"];
-                    [pjsip.activeCalls setObject:mutableCallInfo forKey:uuid];
+                    [pjsip->activeCalls setObject:mutableCallInfo forKey:uuid];
                     
                     // Обновляем глобальные ID звонка
-                    pjsip.currentCallIdentifier = call_id;
-                    pjsip.incoming_call_id = call_id;
+                    pjsip->currentCallIdentifier = call_id;
+                    pjsip->incoming_call_id = call_id;
                 });
                 
                 return;
@@ -866,19 +861,11 @@ static void onIncomingCall(pjsua_acc_id acc_id, pjsua_call_id call_id, pjsip_rx_
         // Вызываем метод для отображения входящего звонка через CallKit
         dispatch_async(dispatch_get_main_queue(), ^{
             [[PJSIPIntegration sharedInstance] reportIncomingCallWithUUID:callUUID caller:caller forCallId:call_id];
-            
-            // Вызываем обработчик входящего звонка, если он настроен
-            PJSIPIntegration *pjsip = [PJSIPIntegration sharedInstance];
-            if (pjsip->incomingCall) {
-                pjsip->incomingCall();
-            }
         });
     }
     
     // Всегда устанавливаем текущий входящий звонок
-    PJSIPIntegration *pjsipInstance = [PJSIPIntegration sharedInstance];
-    pjsipInstance.incoming_call_id = call_id;
-    pjsipInstance.currentCallIdentifier = call_id;
+    pjsip->incoming_call_id = call_id;
 }
 
 static void on_call_state(pjsua_call_id call_id, pjsip_event *e) {
@@ -905,25 +892,36 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e) {
     
     NSLog(@"⚡️ Изменение состояния звонка - call_id: %d, state: %d", call_id, ci.state);
     
-    // Завершаем звонок через CallKit, если он был начат
     if (ci.state == PJSIP_INV_STATE_DISCONNECTED) {
-        NSLog(@"📞 SIP звонок завершен: %d", call_id);
+        NSLog(@"⚡️ Звонок завершен, вызов UI обработчика");
         
-        // Ищем UUID для этого звонка в activeCallsa
+        // Получаем UUID из словаря активных звонков
+        NSString *callIdStr = [NSString stringWithFormat:@"%d", call_id];
         NSUUID *callUUID = nil;
         
-        // Используем [[PJSIPIntegration sharedInstance] для доступа к переменным экземпляра класса
+        // Ищем UUID, связанный с этим call_id
+        for (NSString *uuidString in activeCalls) {
+            NSDictionary *callInfo = [activeCalls objectForKey:uuidString];
+            if (callInfo && [callInfo objectForKey:@"call_id"]) {
+                NSNumber *callIdNumber = [callInfo objectForKey:@"call_id"];
+                if ([callIdNumber intValue] == call_id) {
+                    callUUID = [[NSUUID alloc] initWithUUIDString:uuidString];
+                    break;
+                }
+            }
+        }
+        
         dispatch_async(dispatch_get_main_queue(), ^{
             // Принудительно завершаем CallKit-сессию, если она существует
             if (callUUID != nil) {
                 NSLog(@"📱 CallKit: Принудительное завершение сессии для UUID %@", callUUID);
-                [[PJSIPIntegration sharedInstance].activeCalls removeObjectForKey:callUUID.UUIDString];
+                [activeCalls removeObjectForKey:callUUID.UUIDString];
                 
                 // Завершаем звонок в CallKit
                 CXEndCallAction *endCallAction = [[CXEndCallAction alloc] initWithCallUUID:callUUID];
                 CXTransaction *transaction = [[CXTransaction alloc] initWithAction:endCallAction];
                 
-                [[PJSIPIntegration sharedInstance].callController requestTransaction:transaction completion:^(NSError *error) {
+                [callKitCallController requestTransaction:transaction completion:^(NSError *error) {
                     if (error) {
                         NSLog(@"❌ CallKit: Ошибка при завершении звонка: %@", error);
                     } else {
@@ -932,10 +930,8 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e) {
                 }];
             }
             
-            // Прямое обращение к блоку endCall через PJSIPIntegration
-            PJSIPIntegration *pjsip = [PJSIPIntegration sharedInstance];
-            if (pjsip->endCall) {
-                pjsip->endCall();
+            if (endCall) {
+                endCall();
             } else {
                 NSLog(@"⚠️ Обработчик завершения звонка не настроен!");
             }
@@ -1147,39 +1143,19 @@ static void on_reg_state(pjsua_acc_id acc_id) {
 }
 
 - (void)cleanupOldCallUUIDs {
-    // Находим и удаляем старые записи о звонках, которым больше 30 минут
-    NSMutableArray *keysToRemove = [NSMutableArray array];
-    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
+    // Ограничиваем до 10 самых последних UUID
+    if (self.reportedCallUUIDs.count <= 10) return;
     
-    for (NSString *uuidString in self.activeCalls) {
-        NSDictionary *callInfo = [self.activeCalls objectForKey:uuidString];
-        NSNumber *creationTime = [callInfo objectForKey:@"creation_time"];
-        
-        if (creationTime) {
-            NSTimeInterval callTime = [creationTime doubleValue];
-            
-            // Если звонок был создан более 30 минут назад, удаляем его
-            if (currentTime - callTime > 30 * 60) {
-                [keysToRemove addObject:uuidString];
-            }
-        }
-    }
+    NSMutableArray *uuids = [NSMutableArray arrayWithArray:[self.reportedCallUUIDs allObjects]];
+    [uuids sortUsingComparator:^NSComparisonResult(id obj1, id obj2) {
+        return [obj1 compare:obj2];
+    }];
     
-    // Удаляем старые записи
-    for (NSString *key in keysToRemove) {
-        [self.activeCalls removeObjectForKey:key];
-    }
+    NSRange removeRange = NSMakeRange(0, uuids.count - 10);
+    NSArray *toRemove = [uuids subarrayWithRange:removeRange];
     
-    // Ограничиваем размер множества отслеживаемых UUID звонков
-    if (self.reportedCallUUIDs.count > 20) {
-        NSMutableSet *tempSet = [self.reportedCallUUIDs mutableCopy];
-        NSArray *allUUIDs = [tempSet allObjects];
-        NSRange rangeToRemove = NSMakeRange(0, allUUIDs.count - 10);
-        NSArray *uuidsToRemove = [allUUIDs subarrayWithRange:rangeToRemove];
-        
-        for (NSString *uuid in uuidsToRemove) {
-            [self.reportedCallUUIDs removeObject:uuid];
-        }
+    for (NSString *uuid in toRemove) {
+        [self.reportedCallUUIDs removeObject:uuid];
     }
 }
 
@@ -1274,33 +1250,22 @@ static void on_reg_state(pjsua_acc_id acc_id) {
 #pragma mark - CXProviderDelegate
 
 - (void)providerDidReset:(CXProvider *)provider {
-    NSLog(@"📱 CallKit: Сброс провайдера");
+    NSLog(@"📱 CallKit: providerDidReset");
     
-    // Завершаем все активные звонки (если есть)
-    for (NSString *uuidString in self.activeCalls) {
-        NSDictionary *callInfo = [self.activeCalls objectForKey:uuidString];
+    // Сбрасываем все звонки при сбросе провайдера
+    for (NSString *uuidString in activeCalls) {
+        NSDictionary *callInfo = [activeCalls objectForKey:uuidString];
         NSNumber *callIdNumber = [callInfo objectForKey:@"call_id"];
         
         if (callIdNumber != nil) {
             pjsua_call_id callId = [callIdNumber intValue];
-            
-            if (callId != PJSUA_INVALID_ID && pjsua_call_is_active(callId)) {
-                NSLog(@"📱 CallKit: Завершение звонка с ID %d при сбросе провайдера", callId);
-                pjsua_call_hangup(callId, 0, NULL, NULL);
-            }
+            pjsua_call_hangup(callId, 0, NULL, NULL);
         }
     }
     
-    // Сбрасываем глобальные переменные и коллекции
-    [self.activeCalls removeAllObjects];
-    
-    // Сбрасываем состояние текущего звонка
-    self.currentCallUUID = nil;
-    self.currentCallIdentifier = PJSUA_INVALID_ID;
-    self.incoming_call_id = PJSUA_INVALID_ID;
-    
-    // Деактивируем аудио сессию
-    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+    // Очищаем список активных звонков
+    [activeCalls removeAllObjects];
+    currentCallUUID = nil;
 }
 
 - (void)provider:(CXProvider *)provider performStartCallAction:(CXStartCallAction *)action {
@@ -1312,19 +1277,7 @@ static void on_reg_state(pjsua_acc_id acc_id) {
 }
 
 - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAction *)action {
-    NSLog(@"📱 CallKit: Ответ на звонок через CallKit");
-    
-    // Получаем информацию о звонке из словаря
-    NSDictionary *callInfo = [self.activeCalls objectForKey:action.callUUID.UUIDString];
-    pjsua_call_id callId = PJSUA_INVALID_ID;
-    
-    if (callInfo != nil) {
-        NSNumber *callIdNumber = [callInfo objectForKey:@"call_id"];
-        
-        if (callIdNumber != nil) {
-            callId = [callIdNumber intValue];
-        }
-    }
+    NSLog(@"📱 CallKit: performAnswerCallAction");
     
     // Сохраняем время ответа для проверки в performEndCallAction
     static NSDate *lastAnswerTime = nil;
@@ -1343,7 +1296,7 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     // Это помогает предотвратить конфликт с потенциальным вызовом performEndCallAction
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Получаем информацию о звонке из сохраненного списка
-        NSDictionary *callInfo = [self.activeCalls objectForKey:action.callUUID.UUIDString];
+        NSDictionary *callInfo = [activeCalls objectForKey:action.callUUID.UUIDString];
         __block pjsua_call_id sipCallId = PJSUA_INVALID_ID;
         
         if (callInfo) {
@@ -1351,19 +1304,19 @@ static void on_reg_state(pjsua_acc_id acc_id) {
             if (callIdNumber) {
                 sipCallId = [callIdNumber intValue];
                 // Сохраняем ID в обоих полях для согласованности
-                self.incoming_call_id = sipCallId;
-                self.currentCallIdentifier = sipCallId;
+                incoming_call_id = sipCallId;
+                currentCallIdentifier = sipCallId;
                 NSLog(@"📱 CallKit: Найден ID звонка в активных звонках: %d", sipCallId);
             }
         }
         
         // Если ID не найден, попробуем использовать сохраненные глобальные ID
         if (sipCallId == PJSUA_INVALID_ID) {
-            if (self.incoming_call_id != PJSUA_INVALID_ID) {
-                sipCallId = self.incoming_call_id;
+            if (incoming_call_id != PJSUA_INVALID_ID) {
+                sipCallId = incoming_call_id;
                 NSLog(@"📱 CallKit: Используем глобальный incoming_call_id: %d", sipCallId);
-            } else if (self.currentCallIdentifier != PJSUA_INVALID_ID) {
-                sipCallId = self.currentCallIdentifier;
+            } else if (currentCallIdentifier != PJSUA_INVALID_ID) {
+                sipCallId = currentCallIdentifier;
                 NSLog(@"📱 CallKit: Используем глобальный currentCallIdentifier: %d", sipCallId);
             }
         }
@@ -1374,17 +1327,26 @@ static void on_reg_state(pjsua_acc_id acc_id) {
         
         // Регистрируем текущий поток для безопасного вызова функций PJSIP
         if (!pj_thread_is_registered()) {
+            // Инициализация дескриптора потока перед регистрацией
             memset(&answerActionDesc, 0, sizeof(answerActionDesc));
-            pj_status_t regStatus = pj_thread_register("AnswerActionThread", answerActionDesc, &answerActionThread);
             
+            pj_status_t regStatus = pj_thread_register("AnswerActionThread", answerActionDesc, &answerActionThread);
             if (regStatus != PJ_SUCCESS) {
                 NSLog(@"❌ Ошибка регистрации потока для ответа на звонок: %d", regStatus);
             } else {
                 NSLog(@"✅ Поток для ответа на звонок успешно зарегистрирован");
             }
+        } else {
+            NSLog(@"ℹ️ Поток уже зарегистрирован в PJSIP");
         }
         
-        // Если все еще не удалось найти ID, попробуем получить список активных звонков
+        // Активируем аудиоустройство для звонка
+        BOOL audioActivated = [self activateSoundDevice];
+        if (!audioActivated) {
+            NSLog(@"⚠️ Активация аудио не удалась, но продолжаем обработку звонка");
+        }
+        
+        // Ищем ID звонка если не нашли его в активных звонках
         if (sipCallId == PJSUA_INVALID_ID) {
             pjsua_call_id call_ids[PJSUA_MAX_CALLS];
             unsigned call_count = PJSUA_MAX_CALLS;
@@ -1397,8 +1359,8 @@ static void on_reg_state(pjsua_acc_id acc_id) {
                     sipCallId = call_ids[0];
                     NSLog(@"📱 CallKit: Используем первый найденный активный звонок: %d", sipCallId);
                     // Обновляем глобальные переменные
-                    self.incoming_call_id = sipCallId;
-                    self.currentCallIdentifier = sipCallId;
+                    incoming_call_id = sipCallId;
+                    currentCallIdentifier = sipCallId;
                 }
             } @catch (NSException *exception) {
                 NSLog(@"❌ Исключение при поиске активных звонков: %@", exception);
@@ -1446,7 +1408,7 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     }
     
     // Получаем информацию о звонке по UUID
-    NSDictionary *callInfo = [self.activeCalls objectForKey:action.callUUID.UUIDString];
+    NSDictionary *callInfo = [activeCalls objectForKey:action.callUUID.UUIDString];
     pjsua_call_id callId = PJSUA_INVALID_ID;
     
     if (callInfo != nil) {
@@ -1459,10 +1421,10 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     
     // Если мы не нашли callId в словаре, попробуем получить его из globals
     if (callId == PJSUA_INVALID_ID) {
-        if (self.currentCallIdentifier != PJSUA_INVALID_ID) {
-            callId = self.currentCallIdentifier;
-        } else if (self.incoming_call_id != PJSUA_INVALID_ID) {
-            callId = self.incoming_call_id;
+        if (currentCallIdentifier != PJSUA_INVALID_ID) {
+            callId = currentCallIdentifier;
+        } else if (incoming_call_id != PJSUA_INVALID_ID) {
+            callId = incoming_call_id;
         }
     }
     
@@ -1502,7 +1464,7 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     }
     
     // Удаляем информацию об этом звонке
-    [self.activeCalls removeObjectForKey:action.callUUID.UUIDString];
+    [activeCalls removeObjectForKey:action.callUUID.UUIDString];
     
     // Удаляем UUID из списка обработанных, чтобы разрешить будущие звонки с этим UUID
     if (self.reportedCallUUIDs && [self.reportedCallUUIDs containsObject:action.callUUID.UUIDString]) {
@@ -1510,21 +1472,21 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     }
     
     // Сбрасываем переменные, если это был текущий звонок
-    if ([action.callUUID isEqual:self.currentCallUUID]) {
-        self.currentCallUUID = nil;
-        self.currentCallIdentifier = PJSUA_INVALID_ID;
+    if ([action.callUUID isEqual:currentCallUUID]) {
+        currentCallUUID = nil;
+        currentCallIdentifier = PJSUA_INVALID_ID;
     }
     
     // Если это был входящий звонок, сбрасываем его тоже
-    if (self.incoming_call_id != PJSUA_INVALID_ID) {
-        self.incoming_call_id = PJSUA_INVALID_ID;
+    if (incoming_call_id != PJSUA_INVALID_ID) {
+        incoming_call_id = PJSUA_INVALID_ID;
     }
     
     // Выполняем действие
     [action fulfill];
     
     // Если это был последний активный звонок, убедимся что у нас правильное звуковое устройство
-    if (self.activeCalls.count == 0) {
+    if (activeCalls.count == 0) {
         [self changeOutputAudioPort:AVAudioSessionPortOverrideNone];
         
         // Дополнительная очистка звуковой сессии
@@ -1552,7 +1514,6 @@ static void on_reg_state(pjsua_acc_id acc_id) {
 
 - (void)registerForVoIPPushes {
     NSLog(@"📱 VoIP: Регистрация для VoIP пушей...");
-    
     
     if (voipPushRegistry != nil) {
         return;
@@ -1585,16 +1546,16 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     }
     
     // ВАЖНО: Проверка на активный звонок
-    if (self.currentCallUUID != nil || self.currentCallIdentifier != PJSUA_INVALID_ID) {
+    if (currentCallUUID != nil || currentCallIdentifier != PJSUA_INVALID_ID) {
         NSLog(@"⚠️ VoIP: Игнорируем push, т.к. уже есть активный звонок (UUID: %@, ID: %d)", 
-              self.currentCallUUID, self.currentCallIdentifier);
+              currentCallUUID, currentCallIdentifier);
         return;
     }
     
     // Проверка состояния CallKit - есть ли ожидающие звонки
-    if (self.activeCalls.count > 0) {
+    if (activeCalls.count > 0) {
         NSLog(@"⚠️ VoIP: Игнорируем push, т.к. уже есть %lu активных звонков в CallKit", 
-              (unsigned long)self.activeCalls.count);
+              (unsigned long)activeCalls.count);
         return;
     }
     
@@ -1661,8 +1622,8 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     [callInfo setObject:caller forKey:@"caller"];
     [callInfo setObject:@(PJSUA_INVALID_ID) forKey:@"call_id"];
     [callInfo setObject:@([[NSDate date] timeIntervalSince1970]) forKey:@"creation_time"];
-    [_activeCalls setObject:callInfo forKey:callUUID.UUIDString];
-    self.currentCallUUID = callUUID;
+    [activeCalls setObject:callInfo forKey:callUUID.UUIDString];
+    currentCallUUID = callUUID;
     
     NSLog(@"📱 VoIP: Отображаем CallKit UI для звонка от %@ с UUID %@", caller, callUUID);
     [self.provider reportNewIncomingCallWithUUID:callUUID update:update completion:^(NSError * _Nullable error) {
@@ -1745,9 +1706,9 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     }
     
     // ВАЖНО: Проверка на активный звонок - если уже есть активный звонок, не показываем второй CallKit
-    if (self.currentCallUUID != nil || self.currentCallIdentifier != PJSUA_INVALID_ID) {
+    if (currentCallUUID != nil || currentCallIdentifier != PJSUA_INVALID_ID) {
         NSLog(@"⚠️ VoIP: Игнорируем пуш, т.к. уже есть активный звонок (UUID: %@, ID: %d)", 
-              self.currentCallUUID, self.currentCallIdentifier);
+              currentCallUUID, currentCallIdentifier);
         completion();
         return;
     }
@@ -1801,8 +1762,8 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     [callInfo setObject:caller forKey:@"caller"];
     [callInfo setObject:@(PJSUA_INVALID_ID) forKey:@"call_id"];
     [callInfo setObject:@([[NSDate date] timeIntervalSince1970]) forKey:@"creation_time"];
-    [self.activeCalls setObject:callInfo forKey:callUUID.UUIDString];
-    self.currentCallUUID = callUUID;
+    [activeCalls setObject:callInfo forKey:callUUID.UUIDString];
+    currentCallUUID = callUUID;
     
     NSLog(@"📱 VoIP: Отображаем CallKit UI для звонка от %@ с UUID %@", caller, callUUID);
     [self.provider reportNewIncomingCallWithUUID:callUUID update:update completion:^(NSError * _Nullable error) {
@@ -1838,6 +1799,15 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     });
 }
 
+// Вспомогательный метод для выполнения блока на главном потоке
+- (void)performOnMainThread:(void (^)(void))block {
+    if ([NSThread isMainThread]) {
+        block();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), block);
+    }
+}
+
 // Метод для безопасного ответа на SIP звонок, который можно вызывать из любого потока
 - (void)safeHandleSIPAnswerForCallId:(pjsua_call_id)sipCallId withUUID:(NSString *)uuid {
     // Выполняем ответ в отдельном потоке чтобы не блокировать UI
@@ -1871,8 +1841,8 @@ static void on_reg_state(pjsua_acc_id acc_id) {
                     if (pjsua_enum_calls(call_ids, &call_count) == PJ_SUCCESS && call_count > 0) {
                         callIdToAnswer = call_ids[0];
                         NSLog(@"📱 CallKit: Найден активный звонок после %d попытки: %d", i+1, callIdToAnswer);
-                        self.incoming_call_id = callIdToAnswer;
-                        self.currentCallIdentifier = callIdToAnswer;
+                        incoming_call_id = callIdToAnswer;
+                        currentCallIdentifier = callIdToAnswer;
                         break;
                     }
                 } @catch (NSException *exception) {
@@ -1895,8 +1865,8 @@ static void on_reg_state(pjsua_acc_id acc_id) {
                     if (pjsua_enum_calls(call_ids, &call_count) == PJ_SUCCESS && call_count > 0) {
                         callIdToAnswer = call_ids[0];
                         NSLog(@"📱 CallKit: Найден активный звонок внутри цикла попыток: %d", callIdToAnswer);
-                        self.incoming_call_id = callIdToAnswer;
-                        self.currentCallIdentifier = callIdToAnswer;
+                        incoming_call_id = callIdToAnswer;
+                        currentCallIdentifier = callIdToAnswer;
                     }
                 } @catch (NSException *exception) {
                     NSLog(@"⚠️ Исключение при поиске звонков в цикле: %@", exception);
@@ -1912,67 +1882,18 @@ static void on_reg_state(pjsua_acc_id acc_id) {
                         // Если звонок уже в процессе, считаем это успехом
                         if (ci.state == PJSIP_INV_STATE_CONFIRMED || ci.state == PJSIP_INV_STATE_CONNECTING) {
                             NSLog(@"✅ CallKit: Звонок уже соединен или соединяется");
-                            
-                            // Важно - обновляем информацию о звонке
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                NSMutableDictionary *callInfo = [NSMutableDictionary dictionaryWithDictionary:[self.activeCalls objectForKey:uuid]];
-                                if (callInfo) {
-                                    [callInfo setObject:@(ci.id) forKey:@"call_id"];
-                                    [self.activeCalls setObject:callInfo forKey:uuid];
-                                    
-                                    // Обновляем UUID текущего звонка
-                                    self.currentCallUUID = [[NSUUID alloc] initWithUUIDString:uuid];
-                                }
-                            });
-                            
                             answerSuccess = YES;
                             break;
                         }
                         
                         // Если звонок входящий, пробуем ответить
                         if (ci.state == PJSIP_INV_STATE_INCOMING || ci.state == PJSIP_INV_STATE_EARLY) {
-                            // Активируем аудио перед ответом
-                            [self activateSoundDevice];
-                            [self configureAudioSession];
-                            
-                            // Используем расширенную версию вместо базовой pjsua_call_answer
-                            pjsua_call_setting call_setting;
-                            pjsua_call_setting_default(&call_setting);
-                            call_setting.aud_cnt = 1; // Включаем аудио
-                            call_setting.vid_cnt = 0; // Отключаем видео
-                            
-                            pj_status_t status = pjsua_call_answer2(callIdToAnswer, &call_setting, 200, NULL, NULL);
+                            // Используем напрямую pjsua_call_answer чтобы избежать дополнительных проверок
+                            pj_status_t status = pjsua_call_answer(callIdToAnswer, PJSIP_SC_ACCEPTED, NULL, NULL);
                             
                             if (status == PJ_SUCCESS) {
                                 NSLog(@"✅ CallKit: Звонок принят успешно (попытка %d)", attempt+1);
-                                
-                                // Даем время на установление соединения
-                                [NSThread sleepForTimeInterval:0.5];
-                                
-                                // Проверяем состояние соединения
-                                if (pjsua_call_get_info(callIdToAnswer, &ci) == PJ_SUCCESS) {
-                                    // Активируем медиа соединение
-                                    if (ci.media_status != PJSUA_CALL_MEDIA_ACTIVE && ci.conf_slot != PJSUA_INVALID_ID) {
-                                        NSLog(@"🔊 Активируем аудио соединение для звонка");
-                                        pjsua_conf_connect(ci.conf_slot, 0);
-                                        pjsua_conf_connect(0, ci.conf_slot);
-                                    }
-                                }
-                                
                                 answerSuccess = YES;
-                                
-                                // Обновляем ID звонка в activeCalls
-                                dispatch_async(dispatch_get_main_queue(), ^{
-                                    NSMutableDictionary *callInfo = [NSMutableDictionary dictionaryWithDictionary:[self.activeCalls objectForKey:uuid]];
-                                    if (callInfo) {
-                                        [callInfo setObject:@(callIdToAnswer) forKey:@"call_id"];
-                                        [self.activeCalls setObject:callInfo forKey:uuid];
-                                    }
-                                    
-                                    // Дополнительно настраиваем аудио на главном потоке
-                                    [self configureAudioSession];
-                                });
-                                
                                 break;
                             } else {
                                 NSLog(@"⚠️ CallKit: Ошибка при ответе на звонок: %d (попытка %d)", status, attempt+1);
@@ -2035,15 +1956,15 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     registerPJSIPThread("GetCurrentCallUUID");
     
     // Возвращаем текущий UUID звонка, если он существует
-    if (self.currentCallUUID != nil) {
-        return self.currentCallUUID;
+    if (currentCallUUID != nil) {
+        return currentCallUUID;
     }
     
     // Если нет текущего UUID, но есть активные звонки, возвращаем первый
-    if (self.activeCalls.count > 0) {
-        NSArray *keys = [self.activeCalls allKeys];
+    if (activeCalls.count > 0) {
+        NSArray *keys = [activeCalls allKeys];
         if (keys.count > 0) {
-            return [[NSUUID alloc] initWithUUIDString:keys[0]];
+            return keys[0];
         }
     }
     
@@ -2054,14 +1975,14 @@ static void on_reg_state(pjsua_acc_id acc_id) {
 
 // Метод для получения информации о текущем звонящем
 - (NSString*)getCurrentCallerInfo {
-    if (self.currentCallIdentifier == PJSUA_INVALID_ID) {
+    if (currentCallIdentifier == PJSUA_INVALID_ID) {
         NSLog(@"⚠️ Нет активного звонка для получения информации о звонящем");
         return @"Домофон";
     }
     
     // Получаем информацию о текущем звонке
     pjsua_call_info ci;
-    pj_status_t status = pjsua_call_get_info(self.currentCallIdentifier, &ci);
+    pj_status_t status = pjsua_call_get_info(currentCallIdentifier, &ci);
     
     if (status != PJ_SUCCESS) {
         NSLog(@"❌ Ошибка получения информации о звонке: %d", status);
@@ -2166,30 +2087,10 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     // Остановить предыдущий звук, если воспроизводится
     [self stopRingback];
     
-    // Путь к звуковому файлу рингтона - проверяем разные варианты
+    // Путь к звуковому файлу рингтона
     NSURL *soundURL = [[NSBundle mainBundle] URLForResource:@"ringtone" withExtension:@"wav"];
-    
     if (!soundURL) {
-        // Попробуем найти файл с разными именами или расширениями
-        NSArray *possibleNames = @[@"ring", @"incoming", @"call"];
-        NSArray *possibleExtensions = @[@"wav", @"mp3", @"caf"];
-        
-        for (NSString *name in possibleNames) {
-            for (NSString *ext in possibleExtensions) {
-                soundURL = [[NSBundle mainBundle] URLForResource:name withExtension:ext];
-                if (soundURL) {
-                    NSLog(@"✅ Найден альтернативный файл рингтона: %@.%@", name, ext);
-                    break;
-                }
-            }
-            if (soundURL) break;
-        }
-    }
-    
-    if (!soundURL) {
-        NSLog(@"⚠️ Файл рингтона не найден, используем системный звук");
-        // Используем системный звук как запасной вариант
-        AudioServicesPlaySystemSound(1013); // Системный звук входящего звонка
+        NSLog(@"⚠️ Файл рингтона не найден");
         return;
     }
     
@@ -2198,31 +2099,12 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     
     if (error) {
         NSLog(@"❌ Ошибка при создании аудиоплеера: %@", error);
-        // Используем системный звук как запасной вариант
-        AudioServicesPlaySystemSound(1013);
         return;
     }
     
-    // Настройка громкости звука
-    self.ringbackPlayer.volume = 1.0;
     self.ringbackPlayer.numberOfLoops = -1; // Бесконечное воспроизведение
-    
-    // Активируем аудио сессию для корректного воспроизведения
-    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-    [audioSession setCategory:AVAudioSessionCategoryPlayback withOptions:0 error:nil];
-    [audioSession setActive:YES error:nil];
-    
-    // Подготовка и воспроизведение
     [self.ringbackPlayer prepareToPlay];
-    BOOL playSuccess = [self.ringbackPlayer play];
-    
-    if (!playSuccess) {
-        NSLog(@"❌ Не удалось воспроизвести рингтон");
-        // Используем системный звук как запасной вариант
-        AudioServicesPlaySystemSound(1013);
-    } else {
-        NSLog(@"✅ Рингтон успешно запущен");
-    }
+    [self.ringbackPlayer play];
 }
 
 - (void)stopRingback {
@@ -2257,8 +2139,29 @@ static void on_reg_state(pjsua_acc_id acc_id) {
 }
 
 - (void)startRingback {
-    // Делегируем к единой реализации
-    [self startIncomingRingback];
+    NSLog(@"🔔 Запуск рингтона входящего вызова");
+    
+    // Остановить предыдущий звук, если воспроизводится
+    [self stopRingback];
+    
+    // Путь к звуковому файлу рингтона
+    NSURL *soundURL = [[NSBundle mainBundle] URLForResource:@"ringtone" withExtension:@"wav"];
+    if (!soundURL) {
+        NSLog(@"⚠️ Файл рингтона не найден");
+        return;
+    }
+    
+    NSError *error = nil;
+    self.ringbackPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:soundURL error:&error];
+    
+    if (error) {
+        NSLog(@"❌ Ошибка при создании аудиоплеера: %@", error);
+        return;
+    }
+    
+    self.ringbackPlayer.numberOfLoops = -1; // Бесконечное воспроизведение
+    [self.ringbackPlayer prepareToPlay];
+    [self.ringbackPlayer play];
 }
 
 - (void)sendCallKit_incomingCall:(NSString *)name number:(NSString *)number callId:(NSString *)callId sessionId:(NSString *)sessionId contactIdentifier:(NSString *)contactIdentifier {
@@ -2332,23 +2235,6 @@ static void on_reg_state(pjsua_acc_id acc_id) {
     } else {
         dispatch_async(dispatch_get_main_queue(), block);
     }
-}
-
-- (void)prepareController:(CXEndCallAction *)action {
-    // Получаем информацию о звонке по UUID
-    NSDictionary *callInfo = [self.activeCalls objectForKey:action.callUUID.UUIDString];
-    pjsua_call_id callId = PJSUA_INVALID_ID;
-    
-    if (callInfo != nil) {
-        NSNumber *callIdNumber = [callInfo objectForKey:@"call_id"];
-        
-        if (callIdNumber != nil) {
-            callId = [callIdNumber intValue];
-        }
-    }
-    
-    // Удаляем информацию об этом звонке
-    [self.activeCalls removeObjectForKey:action.callUUID.UUIDString];
 }
 
 @end

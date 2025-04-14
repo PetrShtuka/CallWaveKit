@@ -19,7 +19,19 @@
 @interface PJSIPIntegration : NSObject <CXProviderDelegate, PKPushRegistryDelegate>
 
 + (instancetype _Nonnull)sharedInstance;
+
+// Свойства для работы с CallKit
 @property (nonatomic, strong) NSMutableSet *reportedCallUUIDs;
+@property (nonatomic, strong) AVAudioPlayer *ringbackPlayer;
+@property (nonatomic, strong) NSUUID *currentCallUUID;
+@property (nonatomic, strong) NSMutableDictionary *activeCalls;
+@property (nonatomic, strong) CXCallController *callController;
+@property (nonatomic, strong) CXProvider *provider;
+@property (nonatomic, assign) pjsua_call_id currentCallIdentifier;
+@property (nonatomic, assign) pjsua_call_id incoming_call_id;
+@property (nonatomic, strong) NSString *currentCallId;
+
+// Методы работы с PJSIP
 - (pj_status_t) configurePJSIP;
 - (BOOL) activateSoundDevice;
 - (BOOL) makeCall:(NSString *)str;
@@ -37,6 +49,7 @@
 
 // Метод для получения информации о текущем звонящем
 - (NSString*)getCurrentCallerInfo;
+- (NSString*)displayNameForCaller:(NSString*)caller;
 
 // CallKit Integration
 - (void) setupCallKit;
@@ -50,6 +63,14 @@
 - (void) handlePushNotificationPayload:(NSDictionary *)payload;
 - (void) handlePushDict:(NSDictionary *)payload;
 - (NSDictionary *) lastReceivedPushPayload;
+
+- (void)sendCallKit_incomingCall:(NSString *)name number:(NSString *)number callId:(NSString *)callId sessionId:(NSString *)sessionId contactIdentifier:(NSString *)contactIdentifier;
+
+// Методы для управления звуком
+- (void)startRingback;
+- (void)stopRingback;
+- (void)configureAudioSession;
+- (void)configureAudioRouting;
 
 @end
 

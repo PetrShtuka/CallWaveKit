@@ -6,7 +6,8 @@ target 'SIOSP' do
   use_frameworks!
 
   # Pods for SIOSP
-  pod 'pjsip'
+    pod 'pjsip'
+  	pod 'MobileVLCKit', '3.3.16.3'
 
   target 'SIOSPTests' do
     inherit! :search_paths

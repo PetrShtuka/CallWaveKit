@@ -165,8 +165,9 @@ struct HomeView: View {
                         domain: UserDefaults.standard.string(forKey: "domain") ?? ""
                     )
                     
-                    // Видеоплеер - показываем только если не идет звонок
-                    if isVideoPlayerVisible && !isCallActive {
+                    // Видеоплеер - показываем если пользователь выбрал его отображение
+                    // Теперь видео остается видимым и во время звонка
+                    if isVideoPlayerVisible {
                         videoPlayerContent
                     }
                     
@@ -557,6 +558,14 @@ struct HomeView: View {
                     isIncomingCall = false
                     isCallActive = true
                     callStartTime = Date()
+                }
+                
+                // Обновляем RTSP-поток, чтобы он продолжал работать во время звонка
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if self.isVideoPlayerVisible {
+                        print("🎥 Обновляем RTSP-поток для поддержки видео во время звонка")
+                        self.refreshVideoStream()
+                    }
                 }
                 
                 // Оповещаем о принятии звонка через наш мост для синхронизации состояний
