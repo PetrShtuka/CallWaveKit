@@ -1,4 +1,4 @@
-# SIOSP
+# Majore DOM SIP
 
 ![License](https://img.shields.io/badge/licence-MIT-353535.svg?style=flat)
 ![Platform](https://img.shields.io/badge/plateforme-ios-lightgrey.svg?style=flat)
