@@ -134,6 +134,8 @@ struct UserInfoView: View {
 }
 
 struct HomeView: View {
+    let calls: AppCallService
+
     @State private var isCallActive = false
     @State private var isIncomingCall = false
     @State private var callerInfo: String = "Домофон"
@@ -361,16 +363,16 @@ struct HomeView: View {
     
     private func setupIncomingCallHandler() {
         // Настраиваем обработчик входящего звонка
-        PJSIPIntegration.sharedInstance().configureIncomingCall {
+        self.calls.configureIncomingCall {
             print("⚡️ Обработка входящего звонка в SwiftUI")
             
             // Получаем информацию о звонящем
             DispatchQueue.main.async {
-                let caller = PJSIPIntegration.sharedInstance().getCurrentCallerInfo() as String? ?? "Домофон"
+                let caller = self.calls.getCurrentCallerInfo() as String? ?? "Домофон"
                 callerInfo = caller.isEmpty ? "Домофон" : caller
                 
                 // Проверяем, не был ли звонок уже принят через CallKit
-                let callStatus = PJSIPIntegration.sharedInstance().getCurrentCallStatus()
+                let callStatus = self.calls.getCurrentCallStatus()
                 if callStatus == 1 { // 1 = звонок принят/активен
                     print("⚡️ Звонок уже принят через CallKit, обновляем UI напрямую")
                     withAnimation {
@@ -391,17 +393,21 @@ struct HomeView: View {
         }
         
         // Настраиваем обработчик завершения звонка
-        PJSIPIntegration.sharedInstance().configureEndCall {
+        self.calls.configureEndCall {
             DispatchQueue.main.async {
-                // Явно завершаем звонок в CallKit, если он активен
-                if let callUUID = PJSIPIntegration.sharedInstance().getCurrentCallUUID() {
-                    print("📱 Явное завершение CallKit сессии для UUID: \(callUUID)")
-                    PJSIPIntegration.sharedInstance().endCall(with: callUUID)
-                }
-                
                 withAnimation {
                     isCallActive = false
                     isIncomingCall = false
+                }
+            }
+        }
+
+        self.calls.configureStartCall {
+            DispatchQueue.main.async {
+                withAnimation {
+                    isIncomingCall = false
+                    isCallActive = true
+                    callStartTime = Date()
                 }
             }
         }
@@ -463,7 +469,7 @@ struct HomeView: View {
         var checkCount = 0
         let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [self] timer in
             // Проверяем, принят ли звонок через CallKit
-            let callStatus = PJSIPIntegration.sharedInstance().getCurrentCallStatus()
+            let callStatus = self.calls.getCurrentCallStatus()
             if isIncomingCall && callStatus == 1 { // 1 = звонок принят/активен
                 print("⚡️ Обнаружено, что звонок принят через CallKit")
                 withAnimation {
@@ -498,12 +504,12 @@ struct HomeView: View {
     
     private func checkSIPRegistration() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if PJSIPIntegration.sharedInstance().isRegistered() {
+            if self.calls.isRegistered() {
                 print("✅ SIP registration active")
                 sipStatusMessage = "Успешно зарегистрирован на SIP сервере"
             } else {
                 print("⚠️ SIP registration not active, reconnecting...")
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
                 sipStatusMessage = "Регистрация не активна. Подключение..."
             }
             showSIPStatusAlert = true
@@ -512,74 +518,18 @@ struct HomeView: View {
     
     private func acceptCall() {
         print("⚡️ Звонок принят из пользовательского интерфейса")
-        
-        // Активация аудио должна происходить ДО ответа на звонок
-        if PJSIPIntegration.sharedInstance().activateSoundDevice() {
-            print("✅ Аудио активировано для звонка")
-            
-            // Сначала отвечаем через CallKit, если есть UUID звонка
-            if let callUUID = PJSIPIntegration.sharedInstance().getCurrentCallUUID() {
-                print("📱 Отвечаем через CallKit для UUID: \(callUUID)")
-                
-                // Вызываем метод для автоматического ответа через CallKit интерфейс
-                // Это имитирует ответ на звонок через системный UI и закрывает его
-                let controller = CXCallController()
-                let answerAction = CXAnswerCallAction(call: callUUID)
-                let transaction = CXTransaction(action: answerAction)
-                
-                controller.request(transaction) { error in
-                    if let error = error {
-                        print("❌ Ошибка ответа через CallKit: \(error)")
-                    } else {
-                        print("✅ Успешно ответили через CallKit")
-                        
-                        // Обновляем UI после успешного ответа через CallKit
-                        DispatchQueue.main.async {
-                            withAnimation {
-                                self.isIncomingCall = false
-                                self.isCallActive = true
-                                self.callStartTime = Date()
-                            }
-                        }
-                    }
-                }
-                
-                // Уведомляем CallKit о соединении
-                print("📱 Уведомление CallKit о соединении для UUID: \(callUUID)")
-                PJSIPIntegration.sharedInstance().connectedCall(with: callUUID)
+
+        self.calls.answer { error in
+            if let error {
+                print("❌ Ошибка ответа: \(error)")
+                return
             }
-            
-            // Затем принимаем SIP-звонок напрямую через PJSIP
-            if PJSIPIntegration.sharedInstance().acceptCall() {
-                print("✅ Звонок успешно принят через PJSIP")
-                
-                // Обновляем UI для отображения активного звонка
+            DispatchQueue.main.async {
                 withAnimation {
-                    isIncomingCall = false
-                    isCallActive = true
-                    callStartTime = Date()
+                    self.isIncomingCall = false
+                    self.isCallActive = true
+                    self.callStartTime = Date()
                 }
-                
-                // Обновляем RTSP-поток, чтобы он продолжал работать во время звонка
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    if self.isVideoPlayerVisible {
-                        print("🎥 Обновляем RTSP-поток для поддержки видео во время звонка")
-                        self.refreshVideoStream()
-                    }
-                }
-                
-                // Оповещаем о принятии звонка через наш мост для синхронизации состояний
-                CallKitBridge.shared.callAnsweredFromApp()
-            } else {
-                print("❌ Ошибка при принятии звонка через PJSIP")
-                withAnimation {
-                    isIncomingCall = false
-                }
-            }
-        } else {
-            print("❌ Ошибка активации аудио для звонка")
-            withAnimation {
-                isIncomingCall = false
             }
         }
     }
@@ -587,93 +537,29 @@ struct HomeView: View {
     private func declineCall() {
         print("⚡️ Звонок отклонен")
         
-        // Сначала уведомляем CallKit об отклонении, если есть UUID звонка
-        if let callUUID = PJSIPIntegration.sharedInstance().getCurrentCallUUID() {
-            print("📱 Уведомление CallKit об отклонении для UUID: \(callUUID)")
-            
-            // Завершаем звонок через CallKit
-            let controller = CXCallController()
-            let endAction = CXEndCallAction(call: callUUID)
-            let transaction = CXTransaction(action: endAction)
-            
-            controller.request(transaction) { error in
-                if let error = error {
-                    print("❌ Ошибка завершения звонка через CallKit: \(error)")
-                } else {
-                    print("✅ Успешно завершили звонок через CallKit")
-                }
+        self.calls.decline { error in
+            if let error {
+                print("❌ Ошибка отклонения звонка: \(error)")
             }
-            
-            // Дополнительно вызываем метод PJSIP для завершения CallKit сессии
-            PJSIPIntegration.sharedInstance().endCall(with: callUUID)
-        }
-        
-        // Отклоняем звонок через PJSIP
-        if PJSIPIntegration.sharedInstance().declineCall() {
-            print("✅ Звонок успешно отклонен через PJSIP")
-        } else {
-            print("❌ Ошибка при отклонении звонка через PJSIP")
-        }
-        
-        // Отключаем аудио
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            print("✅ Аудио сессия деактивирована после отклонения звонка")
-        } catch {
-            print("❌ Ошибка деактивации аудио сессии: \(error)")
         }
         
         withAnimation {
             isIncomingCall = false
         }
         
-        // Оповещаем о отклонении звонка через наш мост для синхронизации состояний
-        CallKitBridge.shared.callRejectedFromApp()
     }
     
     private func endCall() {
-        // Сначала завершаем CallKit сессию, если она существует
-        if let callUUID = PJSIPIntegration.sharedInstance().getCurrentCallUUID() {
-            print("📱 Завершение CallKit сессии из UI для UUID: \(callUUID)")
-            
-            // Завершаем звонок через CallKit
-            let controller = CXCallController()
-            let endAction = CXEndCallAction(call: callUUID)
-            let transaction = CXTransaction(action: endAction)
-            
-            controller.request(transaction) { error in
-                if let error = error {
-                    print("❌ Ошибка завершения звонка через CallKit: \(error)")
-                } else {
-                    print("✅ Успешно завершили звонок через CallKit")
-                }
+        self.calls.hangup { error in
+            if let error {
+                print("❌ Ошибка завершения звонка: \(error)")
             }
-            
-            // Также вызываем метод PJSIP для завершения CallKit сессии
-            PJSIPIntegration.sharedInstance().endCall(with: callUUID)
-        }
-        
-        // Затем завершаем SIP-звонок напрямую через PJSIP
-        if PJSIPIntegration.sharedInstance().stopCall() {
-            print("✅ Звонок успешно завершен через PJSIP")
-        } else {
-            print("❌ Ошибка при завершении звонка через PJSIP")
-        }
-        
-        // Отключаем аудио
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            print("✅ Аудио сессия деактивирована")
-        } catch {
-            print("❌ Ошибка деактивации аудио сессии: \(error)")
         }
         
         withAnimation {
             isCallActive = false
         }
         
-        // Оповещаем о завершении звонка через наш мост для синхронизации состояний
-        CallKitBridge.shared.callEndedFromApp()
     }
     
     private func logout() {
@@ -717,12 +603,12 @@ struct HomeView: View {
         // Отложенная проверка, чтобы UI успел загрузиться
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             // Проверяем, есть ли уже активный звонок (например, если приложение было перезапущено во время звонка)
-            let callStatus = PJSIPIntegration.sharedInstance().getCurrentCallStatus()
+            let callStatus = self.calls.getCurrentCallStatus()
             if callStatus != 0 { // Если есть какой-то звонок (статус не 0)
                 print("⚡️ Обнаружен активный звонок при запуске - обновляем UI")
                 
                 // Получаем информацию о звонящем
-                let caller = PJSIPIntegration.sharedInstance().getCurrentCallerInfo() as String? ?? "Домофон"
+                let caller = self.calls.getCurrentCallerInfo() as String? ?? "Домофон"
                 callerInfo = caller.isEmpty ? "Домофон" : caller
                 
                 // Проверяем состояние звонка

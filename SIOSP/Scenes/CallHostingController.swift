@@ -3,13 +3,16 @@ import SwiftUI
 import CallKit
 
 class CallHostingController: UIHostingController<CallView> {
+    let calls: AppCallService
     let callUUID: UUID
     var endCallHandler: (() -> Void)?
     
-    init(callUUID: UUID, callerName: String, callerNumber: String) {
+    init(calls: AppCallService, callUUID: UUID, callerName: String, callerNumber: String) {
+        self.calls = calls
         self.callUUID = callUUID
         
         let callView = CallView(
+            calls: calls,
             callUUID: callUUID,
             callerName: callerName,
             callerNumber: callerNumber,
@@ -23,6 +26,7 @@ class CallHostingController: UIHostingController<CallView> {
         
         // Set the end call handler after initialization
         rootView = CallView(
+            calls: calls,
             callUUID: callUUID,
             callerName: callerName,
             callerNumber: callerNumber,
@@ -49,9 +53,10 @@ class CallHostingController: UIHostingController<CallView> {
 
 // MARK: - CallKit Integration Extension
 extension CallHostingController {
-    static func presentCallViewController(from viewController: UIViewController, callUUID: UUID, callerName: String, callerNumber: String, completion: @escaping () -> Void) {
+    static func presentCallViewController(from viewController: UIViewController, calls: AppCallService, callUUID: UUID, callerName: String, callerNumber: String, completion: @escaping () -> Void) {
         DispatchQueue.main.async {
             let callVC = CallHostingController(
+                calls: calls,
                 callUUID: callUUID,
                 callerName: callerName,
                 callerNumber: callerNumber
@@ -62,4 +67,4 @@ extension CallHostingController {
             viewController.present(callVC, animated: true)
         }
     }
-} 
+}

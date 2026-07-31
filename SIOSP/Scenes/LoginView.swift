@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct LoginView: View {
-    @State private var domain: String = "158.160.5.119:5567"
-    @State private var username: String = "412016022"
-    @State private var password: String = "AbrakadabrA%4#"
+    let calls: AppCallService
+
+    @State private var domain: String = UserDefaults.standard.string(forKey: "domain") ?? ""
+    @State private var username: String = UserDefaults.standard.string(forKey: "username") ?? ""
+    @State private var password: String = UserDefaults.standard.string(forKey: "password") ?? ""
     @State private var showAlert = false
     @State private var alertTitle = ""
     @State private var alertMessage = ""
@@ -152,6 +154,13 @@ struct LoginView: View {
         UserDefaults.standard.set(username, forKey: "username")
         UserDefaults.standard.set(password, forKey: "password")
         UserDefaults.standard.set(true, forKey: "isLoggedIn")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let status = self.calls.configurePJSIP()
+            if status != 0 {
+                print("❌ SIP configuration failed after login: \(status)")
+            }
+        }
         
         // Отправляем уведомление о входе в систему
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -185,6 +194,6 @@ class LoginHostingController: UIHostingController<LoginView> {
 // MARK: - Предварительный просмотр
 struct LoginView_Previews: PreviewProvider {
     static var previews: some View {
-        LoginView()
+        LoginView(calls: AppCallService())
     }
-} 
+}

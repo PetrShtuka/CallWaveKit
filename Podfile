@@ -1,17 +1,13 @@
-# Uncomment the next line to define a global platform for your project
-# platform :ios, '9.0'
+platform :ios, '16.0'
 
 target 'SIOSP' do
-  # Comment the next line if you're not using Swift and don't want to use dynamic frameworks
-  use_frameworks!
+  use_frameworks! linkage: :static
 
-  # Pods for SIOSP
-    pod 'pjsip'
-  	pod 'MobileVLCKit', '3.3.16.3'
+  # The app is only a consumer/demo. PJSIP is an implementation detail of Kit.
+  pod 'CallWaveKit', path: '.'
+  pod 'MobileVLCKit', '3.3.16.3'
 
   target 'SIOSPTests' do
     inherit! :search_paths
-    # Pods for testing
   end
-
 end

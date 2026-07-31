@@ -1,0 +1,4 @@
+module PJSIP [system] {
+    umbrella header "pjsua.h"
+    export *
+}

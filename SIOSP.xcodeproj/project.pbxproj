@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4DDC2E7621F37AFC00F189DF /* PJSIPIntegration.m in Sources */ = {isa = PBXBuildFile; fileRef = 4DDC2E7521F37AFC00F189DF /* PJSIPIntegration.m */; };
 		4DF27EB721F9B4710081013E /* ViewController+Extension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF27EB621F9B4710081013E /* ViewController+Extension.swift */; };
 		4DF558EB21F372F6004C4428 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF558EA21F372F6004C4428 /* AppDelegate.swift */; };
 		4DF558F221F372FA004C4428 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4DF558F121F372FA004C4428 /* Assets.xcassets */; };
 		4DF558F521F372FA004C4428 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4DF558F321F372FA004C4428 /* LaunchScreen.storyboard */; };
 		4DF5590021F372FA004C4428 /* SIOSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF558FF21F372FA004C4428 /* SIOSPTests.swift */; };
 		761515B9440CBCE0A0E40FD1 /* Pods_SIOSPTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 82AD5D76804D3521140659F6 /* Pods_SIOSPTests.framework */; };
+		CA1100010000000000000001 /* AppCallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1100020000000000000001 /* AppCallService.swift */; };
 		D0A2864A2DAAF81E00FA5835 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A286492DAAF81E00FA5835 /* LoginView.swift */; };
 		D0A2864E2DAAFCA400FA5835 /* CallHostingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A2864B2DAAFCA400FA5835 /* CallHostingController.swift */; };
 		D0A2864F2DAAFCA400FA5835 /* CallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A2864C2DAAFCA400FA5835 /* CallView.swift */; };
@@ -21,7 +21,6 @@
 		D0C1E60C2DAB7DC800B02743 /* Pods_SIOSP.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 46015A3071DDB8B9A026DB42 /* Pods_SIOSP.framework */; };
 		D0C1E60D2DAB7DC800B02743 /* Pods_SIOSP.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 46015A3071DDB8B9A026DB42 /* Pods_SIOSP.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0EA03862DABE8F90035F005 /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EA03852DABE8F90035F005 /* VideoPlayerView.swift */; };
-		D0EA038A2DABEE290035F005 /* CallKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EA03892DABEE290035F005 /* CallKitBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,8 +51,6 @@
 		0FEBE163016CD506E04CB114 /* Pods-SIOSP.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-SIOSP.release.xcconfig"; path = "Target Support Files/Pods-SIOSP/Pods-SIOSP.release.xcconfig"; sourceTree = "<group>"; };
 		46015A3071DDB8B9A026DB42 /* Pods_SIOSP.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_SIOSP.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		4DDC2E7421F37AFB00F189DF /* SIOSP-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "SIOSP-Bridging-Header.h"; sourceTree = "<group>"; };
-		4DDC2E7521F37AFC00F189DF /* PJSIPIntegration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PJSIPIntegration.m; sourceTree = "<group>"; };
-		4DDC2E7721F37B3500F189DF /* PJSIPIntegration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PJSIPIntegration.h; sourceTree = "<group>"; };
 		4DF27EB621F9B4710081013E /* ViewController+Extension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ViewController+Extension.swift"; sourceTree = "<group>"; };
 		4DF558E721F372F6004C4428 /* SIOSP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SIOSP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4DF558EA21F372F6004C4428 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -67,13 +64,13 @@
 		82AD5D76804D3521140659F6 /* Pods_SIOSPTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_SIOSPTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		8D2EF0A7917258C5E5D3CBF7 /* Pods-SIOSPTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-SIOSPTests.debug.xcconfig"; path = "Target Support Files/Pods-SIOSPTests/Pods-SIOSPTests.debug.xcconfig"; sourceTree = "<group>"; };
 		9B8EE9C60309A950B375DF48 /* Pods-SIOSPTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-SIOSPTests.release.xcconfig"; path = "Target Support Files/Pods-SIOSPTests/Pods-SIOSPTests.release.xcconfig"; sourceTree = "<group>"; };
+		CA1100020000000000000001 /* AppCallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCallService.swift; sourceTree = "<group>"; };
 		D00037CB2DAA95310016372D /* SIOSP.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SIOSP.entitlements; sourceTree = "<group>"; };
 		D0A286492DAAF81E00FA5835 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		D0A2864B2DAAFCA400FA5835 /* CallHostingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallHostingController.swift; sourceTree = "<group>"; };
 		D0A2864C2DAAFCA400FA5835 /* CallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallView.swift; sourceTree = "<group>"; };
 		D0A2864D2DAAFCA400FA5835 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		D0EA03852DABE8F90035F005 /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
-		D0EA03892DABEE290035F005 /* CallKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallKitBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -110,8 +107,6 @@
 		4DF27EB821F9BB6C0081013E /* Lib */ = {
 			isa = PBXGroup;
 			children = (
-				4DDC2E7521F37AFC00F189DF /* PJSIPIntegration.m */,
-				4DDC2E7721F37B3500F189DF /* PJSIPIntegration.h */,
 				4DDC2E7421F37AFB00F189DF /* SIOSP-Bridging-Header.h */,
 			);
 			path = Lib;
@@ -177,7 +172,7 @@
 		4DF558E921F372F6004C4428 /* SIOSP */ = {
 			isa = PBXGroup;
 			children = (
-				D0EA03892DABEE290035F005 /* CallKitBridge.swift */,
+				CA1100020000000000000001 /* AppCallService.swift */,
 				D00037CB2DAA95310016372D /* SIOSP.entitlements */,
 				4DF558EA21F372F6004C4428 /* AppDelegate.swift */,
 				4DF27EB821F9BB6C0081013E /* Lib */,
@@ -383,9 +378,8 @@
 			files = (
 				4DF558EB21F372F6004C4428 /* AppDelegate.swift in Sources */,
 				4DF27EB721F9B4710081013E /* ViewController+Extension.swift in Sources */,
-				D0EA038A2DABEE290035F005 /* CallKitBridge.swift in Sources */,
+				CA1100010000000000000001 /* AppCallService.swift in Sources */,
 				D0A2864A2DAAF81E00FA5835 /* LoginView.swift in Sources */,
-				4DDC2E7621F37AFC00F189DF /* PJSIPIntegration.m in Sources */,
 				D0A2864E2DAAFCA400FA5835 /* CallHostingController.swift in Sources */,
 				D0A2864F2DAAFCA400FA5835 /* CallView.swift in Sources */,
 				D0A286502DAAFCA400FA5835 /* HomeView.swift in Sources */,
@@ -547,7 +541,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = SIOSP/SIOSP.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = SPXB45LN2P;
+				DEVELOPMENT_TEAM = Y9NCLVZ4U8;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = "$(SRCROOT)/SIOSP/Ressources/Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -555,7 +549,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.petr.sip;
+				PRODUCT_BUNDLE_IDENTIFIER = com.petr.sip.com;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -576,7 +570,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = SIOSP/SIOSP.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = SPXB45LN2P;
+				DEVELOPMENT_TEAM = Y9NCLVZ4U8;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = "$(SRCROOT)/SIOSP/Ressources/Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -584,7 +578,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.petr.sip;
+				PRODUCT_BUNDLE_IDENTIFIER = com.petr.sip.com;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;

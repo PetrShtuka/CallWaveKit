@@ -10,43 +10,14 @@ import UIKit
 import AVFoundation
 import UserNotifications
 import PushKit
-import CallKit
 import BackgroundTasks
-
-// Extension to make PJSIPIntegration easier to use from Swift
-extension PJSIPIntegration {
-    // Convert Swift Dictionary to NSDictionary for use with Objective-C
-    func handleSwiftPushNotification(_ pushData: [AnyHashable: Any]) {
-        // Add a timestamp to track when this push was processed
-        var mutableDict = NSMutableDictionary(dictionary: pushData)
-        mutableDict["timestamp"] = Date().timeIntervalSince1970
-        
-        // Pass NSDictionary to the Objective-C method
-        self.handlePushNotificationPayload(mutableDict as! [AnyHashable : Any])
-    }
-    
-    // Helper method to convert NSDictionary to Swift Dictionary
-    func convertNSDictionaryToSwift(_ nsDict: NSDictionary) -> [AnyHashable: Any] {
-        return nsDict as? [AnyHashable: Any] ?? [:]
-    }
-    
-    // Получение текущего статуса звонка: 0 - нет активного звонка, 1 - активный звонок, 2 - входящий звонок
-    func getCurrentCallStatus() -> Int {
-        // Проверяем, есть ли UUID звонка
-        if let _ = self.getCurrentCallUUID() {
-            // Далее проверяем состояние звонка
-            // Предполагаем, что если мы можем получить UUID звонка, то звонок активен
-            return 1 // Активный звонок, так как есть UUID
-        }
-        return 0 // Нет активных звонков
-    }
-}
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
     var regCheckTimer: Timer?
+    let calls = AppCallService()
     
     // Track registration state for UI updates
     var isSIPRegistered = false
@@ -57,16 +28,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Создаем окно программно (обязательно для приложений без storyboard)
         self.window = UIWindow(frame: UIScreen.main.bounds)
         
-        // Инициализируем мост для CallKit уведомлений
-        _ = CallKitBridge.shared
-        
         // Настройка аудиосессии осуществляется только в момент использования, не здесь
         // Это позволяет избежать проблем с мьютексами
         
         // ВАЖНО: Регистрируем для VoIP пушей как можно раньше, даже до настройки PJSIP
         // Это критично для работы на заблокированном экране
         DispatchQueue.main.async {
-            PJSIPIntegration.sharedInstance().registerForVoIPPushes()
+            self.calls.registerForVoIPPushes()
         }
         
         // Настройка фоновых режимов и уведомлений
@@ -83,7 +51,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Запускаем SIP в фоновом потоке, чтобы не блокировать основной поток
         DispatchQueue.global(qos: .userInitiated).async {
             print("🚀 Инициализация PJSIP...")
-            let status = PJSIPIntegration.sharedInstance().configurePJSIP()
+            let status = self.calls.configurePJSIP()
             if status != 0 {
                 print("❌ Error configuring PJSIP: \(status)")
             } else {
@@ -93,27 +61,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 Thread.sleep(forTimeInterval: 1.0)
                 
                 // Настраиваем CallKit один раз
-                PJSIPIntegration.sharedInstance().setupCallKit()
+                self.calls.setupCallKit()
                 
                 // Проверка статуса SIP-регистрации с достаточной задержкой после настройки
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                    do {
-                        if PJSIPIntegration.sharedInstance().isRegistered() {
-                            print("✅ SIP успешно зарегистрирован после настройки")
-                            self.isSIPRegistered = true
-                        } else {
-                            print("⚠️ SIP не зарегистрирован после настройки, перезапуск регистрации")
-                            PJSIPIntegration.sharedInstance().reRegister()
+                    if self.calls.isRegistered() {
+                        print("✅ SIP успешно зарегистрирован после настройки")
+                        self.isSIPRegistered = true
+                    } else {
+                        print("⚠️ SIP не зарегистрирован после настройки, перезапуск регистрации")
+                        self.calls.reRegister()
+                    }
+
+                    self.regCheckTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                        DispatchQueue.global(qos: .background).async {
+                            self?.checkSIPRegistration()
                         }
-                        
-                        // Запустим таймер для периодической проверки регистрации, но с меньшей частотой
-                        self.regCheckTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                            DispatchQueue.global(qos: .background).async {
-                                self?.checkSIPRegistration()
-                            }
-                        }
-                    } catch {
-                        print("❌ Ошибка при проверке состояния регистрации: \(error)")
                     }
                 }
             }
@@ -153,11 +116,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         if isLoggedIn {
             // Пользователь уже вошел в систему - показываем основной экран SwiftUI
-            let homeView = HomeView()
+            let homeView = HomeView(calls: calls)
             initialViewController = HomeHostingController(rootView: homeView)
         } else {
             // Пользователь не вошел в систему - показываем SwiftUI экран логина
-            let loginView = LoginView()
+            let loginView = LoginView(calls: calls)
             initialViewController = LoginHostingController(rootView: loginView)
         }
         
@@ -170,7 +133,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     @objc private func handleLoginNotification() {
         DispatchQueue.main.async {
             // Переключаемся на главный экран SwiftUI
-            let homeView = HomeView()
+            let homeView = HomeView(calls: self.calls)
             let homeHostingController = HomeHostingController(rootView: homeView)
             
             // Анимированный переход
@@ -187,7 +150,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     @objc private func handleLogoutNotification() {
         DispatchQueue.main.async {
             // Переключаемся на экран логина SwiftUI
-            let loginView = LoginView()
+            let loginView = LoginView(calls: self.calls)
             let loginHostingController = LoginHostingController(rootView: loginView)
             
             // Анимированный переход
@@ -213,29 +176,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         lastCheckTime = currentTime
         
-        do {
-            // Проверка статуса регистрации SIP
-            if PJSIPIntegration.sharedInstance().isRegistered() {
-                print("✅ SIP регистрация активна")
-                
-                // Обновляем UI статус
-                DispatchQueue.main.async {
-                    self.isSIPRegistered = true
-                }
-            } else {
-                print("⚠️ SIP регистрация потеряна, восстанавливаем...")
-                
-                // Обновляем UI статус
-                DispatchQueue.main.async {
-                    self.isSIPRegistered = false
-                }
-                
-              
-                    PJSIPIntegration.sharedInstance().reRegister()
-                
+        if self.calls.isRegistered() {
+            print("✅ SIP регистрация активна")
+
+            DispatchQueue.main.async {
+                self.isSIPRegistered = true
             }
-        } catch {
-            print("❌ Ошибка при проверке состояния регистрации: \(error)")
+        } else {
+            print("⚠️ SIP регистрация потеряна, восстанавливаем...")
+
+            DispatchQueue.main.async {
+                self.isSIPRegistered = false
+            }
+            self.calls.reRegister()
         }
     }
 
@@ -255,9 +208,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         // Проверка регистрации перед уходом в фон
         DispatchQueue.global(qos: .background).async {
-            if !PJSIPIntegration.sharedInstance().isRegistered() {
+            if !self.calls.isRegistered() {
                 print("⚠️ SIP не зарегистрирован при уходе в фон, попытка регистрации")
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
             }
         }
     }
@@ -286,7 +239,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Проверка и восстановление SIP регистрации
         DispatchQueue.global(qos: .userInitiated).async {
             // Сначала проверяем, действительно ли нам нужна повторная регистрация
-            let isCurrentlyRegistered = PJSIPIntegration.sharedInstance().isRegistered()
+            let isCurrentlyRegistered = self.calls.isRegistered()
             
             // Обновляем UI статус на основе текущего состояния
             DispatchQueue.main.async {
@@ -298,9 +251,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 print("✅ SIP уже зарегистрирован, пропускаем повторную регистрацию")
                 
                 // Проверяем наличие отложенных VoIP пушей
-                if let lastPayload = PJSIPIntegration.sharedInstance().lastReceivedPushPayload() {
+                if let lastPayload = self.calls.lastReceivedPushPayload() {
                     print("📱 Обработка отложенного VoIP пуша")
-                    PJSIPIntegration.sharedInstance().handlePushNotificationPayload(lastPayload)
+                    self.calls.handlePushNotificationPayload(lastPayload)
                 }
                 return
             }
@@ -317,25 +270,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             if !domain.isEmpty && !username.isEmpty && !password.isEmpty {
                 print("📞 Восстановление SIP-регистрации с параметрами: \(username)@\(domain)")
                 
-                // В PJSIPIntegration нет метода registerAccount, используем доступные методы
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
             } else {
                 // Если нет параметров, просто пытаемся переподключиться с текущими данными
                 print("⚠️ Нет сохраненных SIP параметров, используем текущую конфигурацию")
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
             }
             
             // Обрабатываем отложенные VoIP уведомления при активации 
-            if let nsDictPayload = PJSIPIntegration.sharedInstance().lastReceivedPushPayload() {
+            if let nsDictPayload = self.calls.lastReceivedPushPayload() {
                 // Используем вспомогательный метод для конвертации NSDictionary -> Swift Dictionary
-                let swiftDict = PJSIPIntegration.sharedInstance().convertNSDictionaryToSwift(nsDictPayload as NSDictionary)
+                let swiftDict = self.calls.convertNSDictionaryToSwift(nsDictPayload as NSDictionary)
                 
                 // Проверяем, не старше ли пуш 60 секунд
                 if let timestamp = swiftDict["timestamp"] as? TimeInterval,
                    Date().timeIntervalSince1970 - timestamp < 60 {
                     print("📱 Обработка отложенного VoIP уведомления при активации приложения")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        PJSIPIntegration.sharedInstance().handleSwiftPushNotification(swiftDict)
+                        self.calls.handleSwiftPushNotification(swiftDict)
                     }
                 }
             }
@@ -377,9 +329,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         // Выполняем проверку и обновление SIP регистрации
         DispatchQueue.global(qos: .utility).async {
-            if !PJSIPIntegration.sharedInstance().isRegistered() {
+            if !self.calls.isRegistered() {
                 print("⚠️ Background refresh: SIP не зарегистрирован, повторная регистрация")
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
             } else {
                 print("✅ Background refresh: SIP регистрация активна")
             }
@@ -631,7 +583,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
             
             // Если уже зарегистрированы, не пытаемся регистрироваться снова
-            if PJSIPIntegration.sharedInstance().isRegistered() {
+            if self.calls.isRegistered() {
                 print("✅ SIP уже зарегистрирован, пропускаем повторную регистрацию")
                 return
             }
@@ -646,11 +598,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             if !domain.isEmpty && !username.isEmpty && !password.isEmpty {
                 print("📞 Восстановление SIP-регистрации с параметрами: \(username)@\(domain)")
                 
-                // В PJSIPIntegration нет метода registerAccount, используем доступные методы
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
             } else {
                 print("⚠️ Нет сохраненных SIP параметров, используем имеющуюся конфигурацию")
-                PJSIPIntegration.sharedInstance().reRegister()
+                self.calls.reRegister()
             }
         }
     }
@@ -704,7 +655,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         // Проверяем текущее состояние звонков через PJSIP
         // Используем метод getCurrentCallStatus() вместо hasSIPCall() и isCallConnected()
-        let callStatus = PJSIPIntegration.sharedInstance().getCurrentCallStatus()
+        let callStatus = self.calls.getCurrentCallStatus()
         
         if callStatus != 0 { // Если есть активный звонок (статус не 0)
             if callStatus == 1 { // Если звонок принят/соединен (статус 1)
@@ -726,7 +677,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
                                willPresent notification: UNNotification,
                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Всегда показываем уведомления, даже если приложение на переднем плане
-        completionHandler([.alert, .sound, .badge])
+        completionHandler([.banner, .sound, .badge])
     }
     
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -741,7 +692,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
            let alert = aps["alert"] as? String, 
            alert.hasPrefix("Incoming call from ") {
             // Используем Swift-дружественный метод
-            PJSIPIntegration.sharedInstance().handleSwiftPushNotification(userInfo)
+            self.calls.handleSwiftPushNotification(userInfo)
         }
         
         completionHandler()
@@ -756,7 +707,7 @@ extension AppDelegate {
         print("📱 Получен токен для пуш-уведомлений: \(tokenString)")
         
         // Пересылаем токен в PJSIP если нужно
-        // PJSIPIntegration.sharedInstance().setDeviceToken(tokenString)
+        // self.calls.setDeviceToken(tokenString)
     }
     
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
@@ -771,11 +722,10 @@ extension AppDelegate {
            let alert = aps["alert"] as? String, 
            alert.hasPrefix("Incoming call from ") {
             // Используем Swift-дружественный метод
-            PJSIPIntegration.sharedInstance().handleSwiftPushNotification(userInfo)
+            self.calls.handleSwiftPushNotification(userInfo)
             completionHandler(.newData)
         } else {
             completionHandler(.noData)
         }
     }
 }
-

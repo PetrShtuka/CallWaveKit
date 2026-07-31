@@ -3,6 +3,7 @@ import AVFoundation
 
 struct CallView: View {
     // MARK: - Properties
+    let calls: AppCallService
     let callUUID: UUID
     let callerName: String
     let callerNumber: String
@@ -133,33 +134,22 @@ struct CallView: View {
     }
     
     private func toggleSpeaker() {
-        speakerEnabled.toggle()
-        
-        do {
-            try AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord,
-                mode: .voiceChat,
-                options: speakerEnabled ? [.defaultToSpeaker] : []
-            )
-            try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-            
-            // Notify PJSIP about the change
-            PJSIPIntegration.sharedInstance().changeOutputAudioPort(
-                speakerEnabled ? .speaker : .none
-            )
-        } catch {
-            print("Error setting audio session: \(error.localizedDescription)")
+        let newValue = !speakerEnabled
+        if self.calls.setSpeakerEnabled(newValue) {
+            speakerEnabled = newValue
         }
     }
     
     private func toggleMute() {
-        micMuted.toggle()
-        // Add functionality to mute microphone in PJSIP
+        let newValue = !micMuted
+        if self.calls.setMicrophoneMuted(newValue) {
+            micMuted = newValue
+        }
     }
     
     private func endCall() {
         // End the call
-        PJSIPIntegration.sharedInstance().stopCall()
+        self.calls.stopCall()
         
         // Call the completion handler
         onEnd()
@@ -170,6 +160,7 @@ struct CallView: View {
 struct CallView_Previews: PreviewProvider {
     static var previews: some View {
         CallView(
+            calls: AppCallService(),
             callUUID: UUID(),
             callerName: "Домофон",
             callerNumber: "22",
@@ -177,4 +168,4 @@ struct CallView_Previews: PreviewProvider {
             onEnd: {}
         )
     }
-} 
+}
