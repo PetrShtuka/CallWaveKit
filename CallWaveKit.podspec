@@ -11,7 +11,7 @@ Pod::Spec.new do |spec|
   spec.author = { 'CallWave' => 'support@example.com' }
   spec.source = { git: 'https://github.com/PetrShtuka/CallWave.git', tag: spec.version.to_s }
 
-  spec.platform = :ios, '16.0'
+  spec.platform = :ios, '15.0'
   spec.requires_arc = true
   spec.source_files = 'CallWaveKit/**/*.{h,m}'
   spec.public_header_files = 'CallWaveKit/CallWaveKit.h', 'CallWaveKit/CallWaveClient.h'

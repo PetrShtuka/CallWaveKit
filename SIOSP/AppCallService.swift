@@ -24,28 +24,47 @@ final class AppCallService: NSObject, CallWaveClientDelegate {
             password: defaults.string(forKey: "password") ?? "",
             includesCallsInRecents: false
         )
+        return login(with: configuration)
+    }
 
-        if let client,
-           client.configuration.domain == configuration.domain,
-           client.configuration.username == configuration.username,
-           client.configuration.password == configuration.password {
-            if client.isRunning { return true }
-        } else {
-            client?.stop()
-            client = nil
-        }
-
-        let newClient = CallWaveClient(configuration: configuration)
-        newClient.delegate = self
+    /// The client outlives individual calls. Credentials that change per push
+    /// are applied with `updateConfiguration`, which swaps the SIP account
+    /// without recreating the PJSUA stack.
+    @discardableResult
+    func login(with configuration: CallWaveConfiguration) -> Bool {
+        let target = client ?? makeClient()
         do {
-            try newClient.start()
-            client = newClient
-            newClient.registerForVoIPPushes()
+            try target.updateConfiguration(configuration)
+            client = target
+            target.registerForVoIPPushes()
             return true
         } catch {
-            print("CallWaveKit start failed: \(error)")
+            print("CallWaveKit login failed: \(error)")
             return false
         }
+    }
+
+    private func makeClient() -> CallWaveClient {
+        let client = CallWaveClient(
+            configuration: nil,
+            options: .managesEverything,
+            provider: nil
+        )
+        client.delegate = self
+        return client
+    }
+
+    /// Between calls the account is unregistered while the stack stays alive.
+    func unregister() {
+        do {
+            try client?.unregister()
+        } catch {
+            print("CallWaveKit unregister failed: \(error)")
+        }
+    }
+
+    func sendDTMF(_ digits: String, completion: ((Error?) -> Void)? = nil) {
+        client?.sendDTMF(digits) { error in completion?(error) }
     }
 
     func stop() {
@@ -68,12 +87,19 @@ final class AppCallService: NSObject, CallWaveClientDelegate {
         client?.registerForVoIPPushes()
     }
 
-    func handleVoIPPush(_ payload: [AnyHashable: Any]) {
+    /// `completion` is PushKit's handler. It must reach the library, which only
+    /// invokes it once CallKit has accepted the call — acknowledging the push
+    /// any earlier is what gets the process killed with `0xBAADCA11`.
+    func handleVoIPPush(_ payload: [AnyHashable: Any], completion: (() -> Void)? = nil) {
         lastPushPayload = payload
         if client == nil {
             _ = configure()
         }
-        client?.handleVoIPPushPayload(payload)
+        guard let client else {
+            completion?()
+            return
+        }
+        client.handleVoIPPushPayload(payload, completion: completion)
     }
 
     func lastReceivedPushPayload() -> [AnyHashable: Any]? {
