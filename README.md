@@ -14,8 +14,14 @@ The repository contains:
 - two-way voice through the PJSIP conference bridge;
 - microphone mute at the RTP capture connection;
 - answer, decline and hangup actions through CallKit;
-- SIP registration refresh and retry settings;
-- PushKit wake-up handling.
+- DTMF over RFC 2833 with a SIP INFO fallback;
+- separate `host`, `port` and `transport` (UDP, TCP, TLS);
+- SIP account replacement without recreating the PJSUA runtime, for
+  credentials that arrive with every push;
+- unregister and logout separately from stack teardown;
+- PushKit wake-up handling with a correctly sequenced completion handler;
+- an optional host-owned mode in which the application keeps its own
+  `CXProvider` and `PKPushRegistry`.
 
 CallWaveKit does not make outgoing calls.
 
@@ -61,7 +67,9 @@ No CocoaPods installation is required when using Swift Package Manager.
 import CallWaveKit
 
 let configuration = CallWaveConfiguration(
-    domain: "sip.example.com:5060",
+    host: "sip.example.com",
+    port: 5060,
+    transport: .UDP,
     username: "1001",
     password: password,
     includesCallsInRecents: false
@@ -75,8 +83,13 @@ calls.registerForVoIPPushes()
 ```
 
 Inject `calls` into the objects that need calling features. Keep a strong
-reference for the client lifetime and call `stop()` when you release the SIP
-session.
+reference for the client lifetime. Between calls use `unregister()` or
+`logout()`; `stop()` destroys the PJSUA runtime and is for teardown only.
+
+An application that already owns a `CXProvider` or a `PKPushRegistry` passes
+`options: []` and its own provider instead, and drives the client from its own
+delegates. See [CallWaveKit/README.md](CallWaveKit/README.md) for that mode,
+for per-push credentials, for DTMF and for the audio-session hooks.
 
 PJSUA exposes a process-wide C runtime. CallWaveKit returns
 `CallWaveErrorEngineAlreadyRunning` if a second client calls `start()` while
@@ -96,10 +109,18 @@ your backend.
 
 ## Requirements
 
-- iOS 16 or later;
+- iOS 15.0 or later;
 - Xcode 16 or later;
 - CocoaPods or Swift Package Manager;
 - bundled PJSIP 2.17 XCFramework.
+
+The checked-in `PJSIP.xcframework` was built with a minimum of iOS 16.0. It links
+into an application targeting iOS 15.0, but every object file produces a
+`built for newer 'iOS' version` linker warning. Rebuild it to silence them:
+
+```sh
+MIN_IOS_VERSION=15.0 ./Scripts/build-pjsip-xcframework.sh
+```
 
 ## Rebuilding PJSIP
 
@@ -109,7 +130,7 @@ The checked-in binary can be reproduced with:
 ./Scripts/build-pjsip-xcframework.sh
 ```
 
-The script builds PJSIP 2.17 for iOS 16 or later. Override
+The script builds PJSIP 2.17 for iOS 15.0 or later. Override
 `PJSIP_VERSION`, `MIN_IOS_VERSION`, or `BUILD_JOBS` when necessary.
 
 PJSIP is distributed under GPLv2 or a separate commercial license. Review
