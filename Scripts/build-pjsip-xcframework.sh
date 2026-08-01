@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PJSIP_VERSION="${PJSIP_VERSION:-2.17}"
-MIN_IOS_VERSION="${MIN_IOS_VERSION:-16.0}"
+MIN_IOS_VERSION="${MIN_IOS_VERSION:-15.0}"
 BUILD_JOBS="${BUILD_JOBS:-8}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
