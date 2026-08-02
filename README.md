@@ -14,6 +14,8 @@ The repository contains:
 - two-way voice through the PJSIP conference bridge;
 - microphone mute at the RTP capture connection;
 - answer, decline and hangup actions through CallKit;
+- a configurable settle delay before `200 OK`, for PBXs that are not ready to
+  be answered the moment they send the INVITE;
 - DTMF over RFC 2833 with a SIP INFO fallback;
 - separate `host`, `port` and `transport` (UDP, TCP, TLS);
 - SIP account replacement without recreating the PJSUA runtime, for
