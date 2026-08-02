@@ -53,13 +53,13 @@ pod 'CallWaveKit', path: '/path/to/CallWaveKit'
 For a remote repository, use a semantic-version tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.2.0'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.0'
 ```
 
 ## Installation with Swift Package Manager
 
 In Xcode select **File → Add Package Dependencies**, enter the repository URL,
-select a version starting with `0.2.0`, and add the `CallWaveKit` product to the
+select a version starting with `0.3.0`, and add the `CallWaveKit` product to the
 application target. For local development, use **Add Local** and select this
 repository directory.
 
@@ -168,7 +168,7 @@ The XCFramework is 21 MB and every clone pays for it. For a tagged release,
 attach the zip instead and point the binary target at its URL:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.2.0
+./Scripts/package-pjsip-release.sh 0.3.0
 ```
 
 The script prints the archive's checksum and the `.binaryTarget(url:checksum:)`
