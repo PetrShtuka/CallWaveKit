@@ -29,6 +29,13 @@ FOUNDATION_EXPORT const CallWaveSIPCallId CallWaveSIPCallIdInvalid;
 @property (nonatomic, assign) BOOL microphoneMuted;
 @property (nonatomic, strong, readonly) NSDate *createdAt;
 
+/// Set when the user rejected the call before its INVITE arrived. The record is
+/// kept rather than removed, so the INVITE that follows can be answered with a
+/// final rejection instead of being rung as a fresh call.
+@property (nonatomic, assign, readonly, getter=isCancelledBeforeInvite) BOOL cancelledBeforeInvite;
+/// When the cancellation was recorded, for expiring it.
+@property (nonatomic, strong, readonly, nullable) NSDate *cancelledAt;
+
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithUUID:(NSUUID *)uuid NS_DESIGNATED_INITIALIZER;
 
@@ -46,7 +53,8 @@ FOUNDATION_EXPORT const CallWaveSIPCallId CallWaveSIPCallIdInvalid;
 - (nullable CallWaveCall *)callForUUID:(nullable NSUUID *)uuid;
 - (nullable CallWaveCall *)callForCallId:(CallWaveSIPCallId)callId;
 /// The oldest call that was announced by a push but whose INVITE has not
-/// arrived yet, so a fresh INVITE can be matched to it.
+/// arrived yet, so a fresh INVITE can be matched to it. A call the user already
+/// cancelled is never returned here — it is not waiting to be answered.
 - (nullable CallWaveCall *)callAwaitingInvite;
 /// The call `currentCallUUID` should point at: the most recently created call
 /// that has not ended.
@@ -60,6 +68,24 @@ FOUNDATION_EXPORT const CallWaveSIPCallId CallWaveSIPCallIdInvalid;
 - (void)removeCallWithUUID:(nullable NSUUID *)uuid;
 - (void)removeCallWithCallId:(CallWaveSIPCallId)callId;
 - (NSArray<CallWaveCall *> *)removeAllCalls;
+
+/// Records that the user rejected `uuid` before its INVITE arrived, keeping the
+/// record so the late INVITE can still be refused.
+///
+/// Returns NO — and changes nothing — when there is no such call, or when the
+/// call already has a SIP call id, because then there is a real INVITE to
+/// reject through PJSUA and no reason to remember anything.
+- (BOOL)markCallCancelledBeforeInvite:(nullable NSUUID *)uuid;
+
+/// Removes and returns the call whose late INVITE should be refused, or `nil`
+/// when there is none.
+///
+/// A cancellation older than `window` is dropped and not returned, so a
+/// cancelled call whose INVITE never arrived cannot reject an unrelated later
+/// one. A call that is still legitimately awaiting its INVITE takes precedence:
+/// while one exists this returns `nil`, so the INVITE is matched to it rather
+/// than consumed by a cancellation that may belong to a different call.
+- (nullable CallWaveCall *)takeCallCancelledBeforeInviteWithin:(NSTimeInterval)window;
 
 /// Runs `block` with the lock held, for a read-modify-write that has to be
 /// atomic. Do not call back into the registry from inside it.

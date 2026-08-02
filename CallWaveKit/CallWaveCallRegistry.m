@@ -4,6 +4,12 @@
 
 const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
 
+/// Only the registry may record a cancellation, and only under its lock.
+@interface CallWaveCall ()
+@property (nonatomic, assign, readwrite, getter=isCancelledBeforeInvite) BOOL cancelledBeforeInvite;
+@property (nonatomic, strong, readwrite, nullable) NSDate *cancelledAt;
+@end
+
 @implementation CallWaveCall
 
 - (instancetype)initWithUUID:(NSUUID *)uuid {
@@ -15,6 +21,8 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
         _displayName = @"";
         _state = CallWaveCallStateIncoming;
         _createdAt = [NSDate date];
+        _cancelledBeforeInvite = NO;
+        _cancelledAt = nil;
     }
     return self;
 }
@@ -76,7 +84,9 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
     os_unfair_lock_lock(&_lock);
     CallWaveCall *oldest = nil;
     for (CallWaveCall *call in _callsByUUID.objectEnumerator) {
-        if (call.callId != CallWaveSIPCallIdInvalid || call.state == CallWaveCallStateEnded) {
+        if (call.callId != CallWaveSIPCallIdInvalid ||
+            call.state == CallWaveCallStateEnded ||
+            call.isCancelledBeforeInvite) {
             continue;
         }
         if (oldest == nil || [call.createdAt compare:oldest.createdAt] == NSOrderedAscending) {
@@ -170,6 +180,68 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
         [_callsByUUID removeObjectForKey:call.uuid];
     }
     os_unfair_lock_unlock(&_lock);
+}
+
+- (BOOL)markCallCancelledBeforeInvite:(NSUUID *)uuid {
+    if (uuid == nil) {
+        return NO;
+    }
+    os_unfair_lock_lock(&_lock);
+    CallWaveCall *call = _callsByUUID[uuid];
+    // A call that already has a SIP id has a real INVITE to answer, so there is
+    // nothing to defer; and re-marking must not extend an existing deadline.
+    BOOL marked = call != nil &&
+                  call.callId == CallWaveSIPCallIdInvalid &&
+                  !call.isCancelledBeforeInvite;
+    if (marked) {
+        call.cancelledBeforeInvite = YES;
+        call.cancelledAt = [NSDate date];
+    }
+    os_unfair_lock_unlock(&_lock);
+    return marked;
+}
+
+- (CallWaveCall *)takeCallCancelledBeforeInviteWithin:(NSTimeInterval)window {
+    os_unfair_lock_lock(&_lock);
+
+    NSDate *now = [NSDate date];
+    CallWaveCall *oldestCancelled = nil;
+    BOOL someoneIsStillWaiting = NO;
+    NSMutableArray<CallWaveCall *> *expired = [NSMutableArray array];
+
+    for (CallWaveCall *call in _callsByUUID.objectEnumerator) {
+        if (call.callId != CallWaveSIPCallIdInvalid) {
+            continue;
+        }
+        if (!call.isCancelledBeforeInvite) {
+            if (call.state != CallWaveCallStateEnded) {
+                someoneIsStillWaiting = YES;
+            }
+            continue;
+        }
+        if (call.cancelledAt == nil ||
+            [now timeIntervalSinceDate:call.cancelledAt] > MAX(window, 0)) {
+            [expired addObject:call];
+            continue;
+        }
+        if (oldestCancelled == nil ||
+            [call.cancelledAt compare:oldestCancelled.cancelledAt] == NSOrderedAscending) {
+            oldestCancelled = call;
+        }
+    }
+
+    // A cancellation whose INVITE never came is dead weight; drop it here so it
+    // cannot reject an unrelated call later.
+    for (CallWaveCall *call in expired) {
+        [_callsByUUID removeObjectForKey:call.uuid];
+    }
+
+    CallWaveCall *result = someoneIsStillWaiting ? nil : oldestCancelled;
+    if (result != nil) {
+        [_callsByUUID removeObjectForKey:result.uuid];
+    }
+    os_unfair_lock_unlock(&_lock);
+    return result;
 }
 
 - (NSArray<CallWaveCall *> *)removeAllCalls {

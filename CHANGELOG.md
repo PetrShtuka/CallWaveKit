@@ -8,6 +8,29 @@ bump may contain breaking changes, and each one is listed below.
 
 ### Fixed
 
+- **Rejecting a call before its INVITE arrives now stops the caller ringing.**
+  A VoIP push routinely beats the INVITE by a second or more, and the reject
+  path — unlike the answer path, which polls for the call until `answerTimeout`
+  — sent nothing to SIP when there was no call id yet. It deleted the pending
+  record and returned `CallWaveErrorNoActiveCall`, so no `603`, `486` or `480`
+  ever left the device. The INVITE then arrived to an empty registry, was
+  answered `180 Ringing`, and became a *second* incoming call under a fresh
+  UUID: the intercom kept ringing until `incomingCallTimeout`, and the host saw
+  `.incoming` again after `.ended`.
+
+  `-endCallWithUUID:completion:` and `-declineCallWithUUID:completion:` now
+  keep the record and mark it cancelled instead of deleting it, report
+  `CallWaveCallStateEnded` and complete without an error — the user's intent
+  succeeded, so it is not a failure. `on_incoming_call` checks for such a
+  cancellation before it rings, and answers `603 Decline` instead. Being the
+  callee, it answers the INVITE; it does not send CANCEL.
+
+  A cancellation expires after `answerTimeout`, so one whose INVITE never
+  arrived cannot reject an unrelated later call, and a call still legitimately
+  waiting for its INVITE always takes precedence over a pending cancellation.
+  Nothing is reported to CallKit from this path: in host-owned mode the
+  application owns the provider and ends the call from the state stream.
+
 - **The bundled PJSIP binary is built for iOS 15.0 again.** It carried
   `minos 16.0` while the package declares iOS 15.0, so every application with a
   15.x deployment target linked it with a `built for newer 'iOS' version`
