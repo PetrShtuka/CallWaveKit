@@ -103,13 +103,42 @@ try calls.logout()       // also deletes the account; stack stays alive
 calls.stop()             // pjsua_destroy(), for teardown only
 ```
 
-## Answering before the INVITE arrives
+## Answering: waiting for the INVITE, then letting the PBX settle
 
 PushKit routinely wakes the app before the SIP INVITE. `acceptCall(uuid:…)`
 polls for the call until `answerTimeout` (10 seconds by default) and then fails
 with `CallWaveErrorTimedOut`, so the CallKit action can be fulfilled immediately
 instead of being held past CallKit's own deadline. In library-owned mode
 `performAnswerCallAction:` already does exactly that.
+
+Once the call is found, the answer waits out `acceptDelay` before `200 OK` goes
+out. Intercom PBXs are not always ready to accept the answer the moment they
+have sent the INVITE, and answering too early tears the call down:
+
+```swift
+calls.acceptDelay = 0.5   // the default
+```
+
+Values are clamped to `[0, 1.0]`. The 0.5 default is the pause the previous
+linphone-based implementation used; the one-second ceiling exists because
+CallKit already shows the call as connected while the pause runs, so a longer
+one reads to the user as a call that does not work. Set `0` to answer as soon
+as the INVITE is seen — that path adds no dispatch hop at all.
+
+The pause is applied once per call and only after the INVITE has been found. It
+is not part of `answerTimeout`: an expired timeout stops the wait for the
+INVITE, it does not cancel a pause already under way. When the intercom cancels
+the call during the pause, the answer is skipped and the completion reports
+`CallWaveErrorNoActiveCall`.
+
+Both intervals are logged, so a PBX that needs a different value can be
+measured from the device console:
+
+```
+SIP: INVITE for call 5E2C… observed after 1840 ms, settle delay 500 ms
+SIP: answering call 5E2C… after a 500 ms settle delay
+SIP: 200 OK sent for call 0
+```
 
 ## PushKit completion handler
 

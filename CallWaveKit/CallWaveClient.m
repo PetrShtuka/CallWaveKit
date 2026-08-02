@@ -16,6 +16,8 @@ NSErrorDomain const CallWaveErrorDomain = @"com.callwave.kit";
 static NSString *const CallWaveDefaultCallerName = @"Домофон";
 static const NSTimeInterval CallWaveAnswerPollInterval = 0.25;
 static const NSTimeInterval CallWaveAudioFallbackDelay = 1.5;
+static const NSTimeInterval CallWaveDefaultAcceptDelay = 0.5;
+static const NSTimeInterval CallWaveMaximumAcceptDelay = 1.0;
 static const NSUInteger CallWaveDTMFDurationMilliseconds = 160;
 
 static pj_bool_t gPJInitialized = PJ_FALSE;
@@ -259,7 +261,13 @@ static NSUInteger defaultPortForTransport(CallWaveTransport transport) {
                         completion:(nullable CallWaveCompletion)completion;
 - (void)attemptAcceptForUUID:(NSUUID *)uuid
                     deadline:(NSDate *)deadline
+                   startedAt:(NSDate *)startedAt
                   completion:(nullable CallWaveCompletion)completion;
+- (void)answerCall:(pjsua_call_id)callId
+              uuid:(NSUUID *)uuid
+       settleDelay:(NSTimeInterval)settleDelay
+        completion:(nullable CallWaveCompletion)completion;
+- (BOOL)isCallAnswerable:(pjsua_call_id)callId;
 - (void)connectMediaForCall:(pjsua_call_id)callId;
 - (BOOL)applyMicrophoneMuted:(BOOL)muted;
 - (BOOL)answerSIPCall:(pjsua_call_id)callId;
@@ -308,6 +316,7 @@ static NSUInteger defaultPortForTransport(CallWaveTransport transport) {
         _registrationState = CallWaveRegistrationStateStopped;
         _callState = CallWaveCallStateIdle;
         _answerTimeout = 10.0;
+        _acceptDelay = CallWaveDefaultAcceptDelay;
         _dtmfMethod = CallWaveDTMFMethodAuto;
         _sipQueue = dispatch_queue_create("com.callwave.pjsip", DISPATCH_QUEUE_SERIAL);
         _callController = [[CXCallController alloc] init];
@@ -728,6 +737,25 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
 
 #pragma mark - Incoming-only calling
 
+/// Whether the call is still there to be answered. Must run on `sipQueue`.
+- (BOOL)isCallAnswerable:(pjsua_call_id)callId {
+    if (!gPJSUAStarted || callId == PJSUA_INVALID_ID) {
+        return NO;
+    }
+    ensurePJThreadRegistered("CallWaveAnswerCheck");
+    if (!pjsua_call_is_active(callId)) {
+        return NO;
+    }
+    pjsua_call_info info;
+    if (pjsua_call_get_info(callId, &info) != PJ_SUCCESS) {
+        return NO;
+    }
+    return info.state == PJSIP_INV_STATE_INCOMING ||
+           info.state == PJSIP_INV_STATE_EARLY ||
+           info.state == PJSIP_INV_STATE_CONNECTING ||
+           info.state == PJSIP_INV_STATE_CONFIRMED;
+}
+
 - (BOOL)answerSIPCall:(pjsua_call_id)callId {
     if (!gPJSUAStarted || callId == PJSUA_INVALID_ID) {
         return NO;
@@ -751,7 +779,13 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
     pjsua_call_setting_default(&settings);
     settings.aud_cnt = 1;
     settings.vid_cnt = 0;
-    return pjsua_call_answer2(callId, &settings, PJSIP_SC_OK, NULL, NULL) == PJ_SUCCESS;
+    pj_status_t status = pjsua_call_answer2(callId, &settings, PJSIP_SC_OK, NULL, NULL);
+    if (status == PJ_SUCCESS) {
+        NSLog(@"SIP: 200 OK sent for call %d", callId);
+    } else {
+        NSLog(@"SIP: 200 OK failed for call %d (%d)", callId, status);
+    }
+    return status == PJ_SUCCESS;
 }
 
 - (BOOL)declineSIPCall:(pjsua_call_id)callId {
@@ -873,9 +907,19 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
     [self acceptCallWithUUID:uuid timeout:self.answerTimeout completion:completion];
 }
 
+- (void)setAcceptDelay:(NSTimeInterval)acceptDelay {
+    if (acceptDelay < 0 || isnan(acceptDelay)) {
+        acceptDelay = 0;
+    } else if (acceptDelay > CallWaveMaximumAcceptDelay) {
+        acceptDelay = CallWaveMaximumAcceptDelay;
+    }
+    _acceptDelay = acceptDelay;
+}
+
 - (void)acceptCallWithUUID:(NSUUID *)uuid
                    timeout:(NSTimeInterval)timeout
                 completion:(CallWaveCompletion)completion {
+    NSDate *startedAt = [NSDate date];
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX(timeout, 0)];
     dispatch_async(dispatch_get_main_queue(), ^{
         NSUUID *target = uuid ?: self.currentCallUUID;
@@ -888,7 +932,10 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
         // The audio session category must be in place before the answer so the
         // media path is ready when CallKit activates the session.
         [self configureAudioSessionWithError:NULL];
-        [self attemptAcceptForUUID:target deadline:deadline completion:completion];
+        [self attemptAcceptForUUID:target
+                          deadline:deadline
+                         startedAt:startedAt
+                        completion:completion];
     });
 }
 
@@ -896,14 +943,19 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
 /// answered, so the call is polled instead of blocking a CallKit action.
 - (void)attemptAcceptForUUID:(NSUUID *)uuid
                     deadline:(NSDate *)deadline
+                   startedAt:(NSDate *)startedAt
                   completion:(CallWaveCompletion)completion {
     pjsua_call_id callId = [self callIdForUUID:uuid];
     if (callId == PJSUA_INVALID_ID && [uuid isEqual:self.currentCallUUID]) {
         callId = self.currentCallIdentifier;
     }
 
+    NSTimeInterval waitedMilliseconds = -startedAt.timeIntervalSinceNow * 1000.0;
+
     if (callId == PJSUA_INVALID_ID) {
         if (deadline.timeIntervalSinceNow <= 0) {
+            NSLog(@"SIP: no INVITE for call %@ after %.0f ms, giving up",
+                  uuid.UUIDString, waitedMilliseconds);
             [self complete:completion
                      error:CallWaveMakeError(CallWaveErrorTimedOut,
                                              @"The SIP INVITE did not arrive in time.")];
@@ -912,12 +964,50 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(CallWaveAnswerPollInterval * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self attemptAcceptForUUID:uuid deadline:deadline completion:completion];
+            [self attemptAcceptForUUID:uuid
+                              deadline:deadline
+                             startedAt:startedAt
+                            completion:completion];
         });
         return;
     }
 
+    NSTimeInterval settleDelay = self.acceptDelay;
+    NSLog(@"SIP: INVITE for call %@ observed after %.0f ms, settle delay %.0f ms",
+          uuid.UUIDString, waitedMilliseconds, settleDelay * 1000.0);
+
+    if (settleDelay <= 0) {
+        [self answerCall:callId uuid:uuid settleDelay:0 completion:completion];
+        return;
+    }
+
+    // The settle delay sits outside the INVITE deadline on purpose: an expired
+    // deadline stops the wait for the INVITE, it does not cancel a pause that
+    // has already begun.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(settleDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self answerCall:callId uuid:uuid settleDelay:settleDelay completion:completion];
+    });
+}
+
+/// Runs on the main queue once the settle delay, if any, has elapsed.
+- (void)answerCall:(pjsua_call_id)callId
+              uuid:(NSUUID *)uuid
+       settleDelay:(NSTimeInterval)settleDelay
+        completion:(CallWaveCompletion)completion {
     dispatch_async(self.sipQueue, ^{
+        // Half a second is long enough for the intercom to cancel the call.
+        if (![self isCallAnswerable:callId]) {
+            NSLog(@"SIP: call %@ ended during the %.0f ms settle delay",
+                  uuid.UUIDString, settleDelay * 1000.0);
+            [self complete:completion
+                     error:CallWaveMakeError(CallWaveErrorNoActiveCall,
+                                             @"The call ended before it could be answered.")];
+            return;
+        }
+
+        NSLog(@"SIP: answering call %@ after a %.0f ms settle delay",
+              uuid.UUIDString, settleDelay * 1000.0);
         BOOL answered = [self answerSIPCall:callId];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!answered) {
@@ -927,6 +1017,7 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
                 return;
             }
             [self publishCallState:CallWaveCallStateConnecting uuid:uuid];
+            // Timed from the actual answer, not from the start of the wait.
             [self scheduleAudioSessionFallback];
             [self complete:completion error:nil];
         });

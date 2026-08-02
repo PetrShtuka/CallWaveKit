@@ -173,6 +173,19 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// immediately, so this may safely exceed CallKit's own action timeout.
 @property (nonatomic, assign) NSTimeInterval answerTimeout;
 
+/// Pause between spotting the INVITE and sending `200 OK`. Intercom PBXs are
+/// not always ready to accept the answer the moment they have sent the INVITE,
+/// and answering too early tears the call down.
+///
+/// Defaults to 0.5 seconds, which is the value the previous linphone-based
+/// implementation used. Values are clamped to `[0, 1.0]`: CallKit already shows
+/// the call as connected while this pause runs, so anything past a second reads
+/// to the user as a call that does not work.
+///
+/// The pause is applied once per call, only after the INVITE has been found. It
+/// is not part of `answerTimeout`.
+@property (nonatomic, assign) NSTimeInterval acceptDelay;
+
 /// DTMF method used by `-sendDTMF:completion:`. Defaults to
 /// `CallWaveDTMFMethodAuto`.
 @property (nonatomic, assign) CallWaveDTMFMethod dtmfMethod;
@@ -233,7 +246,8 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// Answers the SIP call directly, without going through `CXCallController`.
 /// If the INVITE has not arrived yet the client polls until `answerTimeout`
 /// elapses — the host is expected to have fulfilled the CallKit action already.
-/// Pass `nil` for the current call.
+/// Once the call is found, the answer waits out `acceptDelay`. Pass `nil` for
+/// the current call.
 - (void)acceptCallWithUUID:(nullable NSUUID *)uuid
                 completion:(nullable CallWaveCompletion)completion
     NS_SWIFT_NAME(acceptCall(uuid:completion:));
