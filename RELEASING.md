@@ -69,9 +69,10 @@ than from the working directory:
 pod spec lint CallWaveKit.podspec --allow-warnings --skip-tests --platforms=ios
 ```
 
-`--allow-warnings` is required: the bundled PJSIP binary is built for iOS 16
-while the pod declares 15, so every object file emits a
-`built for newer 'iOS' version` linker warning.
+`--allow-warnings` is kept as a safety net rather than to paper over a known
+warning: since 0.3.1 the lint passes clean, because the PJSIP binary's `minos`
+matches the platform the pod declares. Drop the flag if you would rather a new
+warning fail the release.
 
 ### 5. Publish to CocoaPods
 

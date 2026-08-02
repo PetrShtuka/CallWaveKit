@@ -4,6 +4,23 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [0.3.1] — 2026-08-02
+
+### Fixed
+
+- **The bundled PJSIP binary is built for iOS 15.0 again.** It carried
+  `minos 16.0` while the package declares iOS 15.0, so every application with a
+  15.x deployment target linked it with a `built for newer 'iOS' version`
+  warning per object file — 199 of them in one real consumer. The build script
+  had already been lowered to 15.0; the XCFramework simply had not been rebuilt
+  since. Every slice now reports `minos 15.0`: `ios-arm64` (arm64) and
+  `ios-arm64_x86_64-simulator` (arm64 and x86_64).
+
+  The rebuild is PJSIP 2.17 with the same options as before. The exported
+  symbols are unchanged — 2241 before and after, with no additions or
+  removals — the headers are untouched, and the XCFramework's `Info.plist` is
+  byte-identical. The public API of CallWaveKit did not change.
+
 ## [0.3.0] — 2026-08-02
 
 0.2.0 was staged during this work but never tagged or published, so it does

@@ -63,7 +63,7 @@ To track the repository directly instead of the published pod — an unreleased
 fix, say — point at the tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.0'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.1'
 ```
 
 ## Host application settings
@@ -184,19 +184,25 @@ The checked-in binary can be reproduced with:
 The script builds PJSIP 2.17 for iOS 15.0 or later. Override `PJSIP_VERSION`,
 `MIN_IOS_VERSION` or `BUILD_JOBS` when necessary.
 
-The checked-in `PJSIP.xcframework` was built with a minimum of iOS 16.0. It
-links into an application targeting iOS 15.0, but every object file produces a
-`built for newer 'iOS' version` linker warning. Rebuild it to silence them:
+The checked-in `PJSIP.xcframework` matches the package's own floor: every slice
+reports `minos 15.0`, so an application with a 15.x deployment target links it
+without `built for newer 'iOS' version` warnings. If you rebuild it, keep the
+floor in step with `Package.swift` and the podspec, and check the result on
+every slice rather than the first one:
 
 ```sh
-MIN_IOS_VERSION=15.0 ./Scripts/build-pjsip-xcframework.sh
+for a in Vendor/PJSIP.xcframework/*/libPJSIP.a; do
+  for arch in $(lipo -archs "$a"); do
+    echo "$a $arch $(otool -arch "$arch" -l "$a" | grep -A3 LC_BUILD_VERSION | grep minos | sort -u)"
+  done
+done
 ```
 
 The XCFramework is 21 MB and every clone pays for it. For a tagged release,
 attach the zip instead and point the binary target at its URL:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.3.0
+./Scripts/package-pjsip-release.sh 0.3.1
 ```
 
 The script prints the archive's checksum and the `.binaryTarget(url:checksum:)`
