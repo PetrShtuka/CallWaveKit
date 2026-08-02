@@ -95,6 +95,17 @@ static NSString *stringFromPJString(pj_str_t value) {
                                   encoding:NSUTF8StringEncoding] ?: @"";
 }
 
+/// `pjsua_acc_info.expires` is `PJSIP_EXPIRES_NOT_SPECIFIED` (0xFFFFFFFF), not
+/// zero, once the registration session is gone — which is exactly the state a
+/// successful un-REGISTER leaves behind, with `status` still 200. The field is
+/// unsigned, so a plain `expires > 0` reports an unregistered account as
+/// registered.
+static BOOL registrationIsActive(const pjsua_acc_info *info) {
+    return info->status == PJSIP_SC_OK &&
+           info->expires > 0 &&
+           info->expires != PJSIP_EXPIRES_NOT_SPECIFIED;
+}
+
 static pj_str_t poolString(pj_pool_t *pool, NSString *value) {
     pj_str_t result;
     pj_strdup2_with_null(pool, &result, value.UTF8String ?: "");
@@ -198,7 +209,9 @@ static void dispatchMain(dispatch_block_t block) {
                         sipStatus:(int)sipStatus
                      wasConnected:(BOOL)wasConnected;
 - (void)handleMediaStateForCall:(pjsua_call_id)callId;
-- (void)handleRegistrationStatus:(int)status reason:(NSString *)reason;
+- (void)handleRegistrationStatus:(int)status
+                          active:(BOOL)active
+                          reason:(NSString *)reason;
 @end
 
 @implementation CallWaveClient
@@ -704,7 +717,7 @@ static void dispatchMain(dispatch_block_t block) {
         }
         pjsua_acc_info info;
         if (pjsua_acc_get_info(gAccountId, &info) == PJ_SUCCESS) {
-            registered = info.status == PJSIP_SC_OK && info.expires > 0;
+            registered = registrationIsActive(&info);
         }
     }];
     return registered;
@@ -753,7 +766,28 @@ static void dispatchMain(dispatch_block_t block) {
     return [self setRegistrationEnabled:YES context:@"Registration refresh" error:error];
 }
 
+/// Sends `REGISTER` with `Expires: 0` and keeps the account, so a later
+/// `-refreshRegistrationWithError:` re-registers without rebuilding anything.
 - (BOOL)unregisterWithError:(NSError **)error {
+    if (![self validateAccountWithError:error]) {
+        return NO;
+    }
+
+    __block BOOL hasSession = NO;
+    [self performSIPSync:^{
+        ensurePJThreadRegistered("CallWaveUnregisterCheck");
+        pjsua_acc_info info;
+        if (pjsua_acc_get_info(gAccountId, &info) == PJ_SUCCESS) {
+            hasSession = info.expires != PJSIP_EXPIRES_NOT_SPECIFIED && info.expires > 0;
+        }
+    }];
+    if (!hasSession) {
+        // PJSUA answers PJ_EINVALIDOP when there is no session to close, which
+        // would turn an unregister-after-every-call into a spurious error.
+        self.registrationState = CallWaveRegistrationStateStopped;
+        return YES;
+    }
+
     return [self setRegistrationEnabled:NO context:@"Unregister" error:error];
 }
 
@@ -2215,15 +2249,20 @@ forCallWithUUID:(NSUUID *)uuid
     }];
 }
 
-- (void)handleRegistrationStatus:(int)status reason:(NSString *)reason {
+- (void)handleRegistrationStatus:(int)status
+                          active:(BOOL)active
+                          reason:(NSString *)reason {
     dispatchMain(^{
         CallWaveRegistrationState state;
         NSError *error = nil;
-        if (status == PJSIP_SC_OK) {
+        if (active) {
             state = CallWaveRegistrationStateRegistered;
         } else if (status >= 300) {
             state = CallWaveRegistrationStateFailed;
             error = CallWaveMakeSIPStatusError(status, reason, @"SIP registration");
+        } else if (status == PJSIP_SC_OK) {
+            // 200 with no registration session left: the un-REGISTER succeeded.
+            state = CallWaveRegistrationStateStopped;
         } else {
             state = CallWaveRegistrationStateRegistering;
         }
@@ -2446,13 +2485,10 @@ static void onRegistrationState(pjsua_acc_id accId) {
         return;
     }
     NSString *reason = stringFromPJString(info.status_text);
-    // `expires == 0` after a successful un-REGISTER is a stopped account, not a
-    // registered one.
-    int status = (info.status == PJSIP_SC_OK && info.expires <= 0)
-        ? PJSIP_SC_REQUEST_TERMINATED
-        : (int)info.status;
     CWLogInfo(CallWaveLogCategorySIP, @"registration %d %@", (int)info.status, reason);
-    [gActiveClient handleRegistrationStatus:status reason:reason];
+    [gActiveClient handleRegistrationStatus:(int)info.status
+                                     active:registrationIsActive(&info)
+                                     reason:reason];
 }
 
 static void onPJLog(int level, const char *data, int length) {
