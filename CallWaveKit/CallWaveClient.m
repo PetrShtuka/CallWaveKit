@@ -77,6 +77,15 @@ static NSString *stringFromPJString(pj_str_t value) {
                                  encoding:NSUTF8StringEncoding] ?: @"";
 }
 
+/// `pjsua_acc_info.expires` is `PJSIP_EXPIRES_NOT_SPECIFIED` (0xFFFFFFFF), not
+/// zero, once the registration session is gone — which is exactly the state a
+/// successful un-REGISTER leaves behind, with `status` still 200.
+static BOOL registrationIsActive(const pjsua_acc_info *info) {
+    return info->status == PJSIP_SC_OK &&
+           info->expires > 0 &&
+           info->expires != PJSIP_EXPIRES_NOT_SPECIFIED;
+}
+
 static pjsip_transport_type_e pjTransportForCallWaveTransport(CallWaveTransport transport) {
     switch (transport) {
         case CallWaveTransportTCP:
@@ -616,7 +625,7 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
         }
         pjsua_acc_info info;
         if (pjsua_acc_get_info(gAccountId, &info) == PJ_SUCCESS) {
-            registered = info.status == PJSIP_SC_OK && info.expires > 0;
+            registered = registrationIsActive(&info);
         }
     });
     return registered;
@@ -665,7 +674,28 @@ static NSError *CallWaveMakeSIPError(pj_status_t status, NSString *context) {
     return [self setRegistrationEnabled:YES context:@"Registration refresh" error:error];
 }
 
+/// Sends `REGISTER` with `Expires: 0` and keeps the account, so a later
+/// `-refreshRegistrationWithError:` re-registers without rebuilding anything.
 - (BOOL)unregisterWithError:(NSError **)error {
+    if (![self validateAccountWithError:error]) {
+        return NO;
+    }
+
+    __block BOOL hasSession = NO;
+    dispatch_sync(self.sipQueue, ^{
+        ensurePJThreadRegistered("CallWaveUnregisterCheck");
+        pjsua_acc_info info;
+        if (pjsua_acc_get_info(gAccountId, &info) == PJ_SUCCESS) {
+            hasSession = info.expires != PJSIP_EXPIRES_NOT_SPECIFIED && info.expires > 0;
+        }
+    });
+    if (!hasSession) {
+        // PJSUA answers PJ_EINVALIDOP when there is no session to close, which
+        // would turn an unregister-after-every-call into a spurious error.
+        self.registrationState = CallWaveRegistrationStateStopped;
+        return YES;
+    }
+
     return [self setRegistrationEnabled:NO context:@"Unregister" error:error];
 }
 
@@ -1775,10 +1805,13 @@ static void onRegistrationState(pjsua_acc_id accId) {
         if (client == nil) {
             return;
         }
-        if (info.status == PJSIP_SC_OK && info.expires > 0) {
+        if (registrationIsActive(&info)) {
             client.registrationState = CallWaveRegistrationStateRegistered;
         } else if (info.status >= 300) {
             client.registrationState = CallWaveRegistrationStateFailed;
+        } else if (info.status == PJSIP_SC_OK) {
+            // 200 with no registration session left: the un-REGISTER succeeded.
+            client.registrationState = CallWaveRegistrationStateStopped;
         } else {
             client.registrationState = CallWaveRegistrationStateRegistering;
         }
