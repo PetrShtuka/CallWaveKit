@@ -1,76 +1,78 @@
 # CallWaveKit
 
-CallWaveKit provides incoming SIP calls on iOS. The library owns SIP
-registration, CallKit, PushKit and the PJSIP audio conference.
+[![CI](https://github.com/PetrShtuka/CallWaveKit/actions/workflows/ci.yml/badge.svg)](https://github.com/PetrShtuka/CallWaveKit/actions/workflows/ci.yml)
+[![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
+[![CocoaPods](https://img.shields.io/badge/CocoaPods-compatible-brightgreen.svg)](https://cocoapods.org)
+[![Platform](https://img.shields.io/badge/platform-iOS%2015%2B-lightgrey.svg)](#requirements)
 
-The repository contains the library and nothing else: `CallWaveKit` (the
-Objective-C core), `CallWaveKitAsync` (the Swift concurrency layer), their
-tests, and the bundled PJSIP binary. Integration examples live in
-[CallWaveKit/README.md](CallWaveKit/README.md).
+Incoming SIP calls on iOS. CallWaveKit owns a PJSIP runtime, the SIP
+registration, CallKit, PushKit and the audio session, and gives the application
+one object to inject and drive.
 
-## Features
+It was built for door intercoms — a call arrives by VoIP push, the user answers
+from the lock screen, talks, and sends a DTMF digit to open the door — and it is
+deliberately narrow: **CallWaveKit does not place outgoing calls.**
 
-- incoming SIP calls — one by default, call waiting and CallKit hold when the
-  engine is configured for more;
-- two-way voice through the PJSIP conference bridge;
-- microphone mute at the RTP capture connection, per call;
-- answer, decline, hangup, mute and hold through CallKit;
-- a configurable settle delay before `200 OK`, for PBXs that are not ready to
-  be answered the moment they send the INVITE;
-- a ring timeout that rejects an unanswered call with `480`;
-- DTMF over RFC 2833 with a SIP INFO fallback;
-- separate `host`, `port` and `transport` (UDP, TCP, TLS), with certificate
-  verification on by default;
-- optional SRTP, outbound proxy, separate digest user, custom REGISTER headers,
-  STUN/ICE and codec priorities;
-- SIP account replacement without recreating the PJSUA runtime, for
-  credentials that arrive with every push;
-- unregister and logout separately from stack teardown;
-- PushKit wake-up handling with a correctly sequenced completion handler and a
-  deadline, so the handler always runs;
-- recovery from Wi-Fi/cellular handovers via `pjsua_handle_ip_change()`;
-- per-call RTP/RTCP statistics;
-- `os_log`-based logging with identifier redaction, a host sink, and no PJSIP
-  protocol trace in release builds;
-- a Swift concurrency layer: `AsyncStream` of events, `async throws` call
-  actions;
-- an optional host-owned mode in which the application keeps its own
-  `CXProvider` and `PKPushRegistry`.
+## Licensing: read this before shipping
 
-CallWaveKit does not make outgoing calls.
+CallWaveKit itself is MIT. **The PJSIP binary it bundles is not.** PJSIP is
+GPLv2 or a separate commercial licence from Teluu, and linking it into a
+closed-source application without that commercial licence puts you in breach of
+the GPL.
 
-See [CHANGELOG.md](CHANGELOG.md) for the version history, including the
-breaking changes in the current development version.
+Review `Vendor/PJSIP-COPYING` and `Vendor/ThirdPartyLicenses`, and settle the
+licence before you ship. This applies to every consumer of this package,
+however it is installed.
 
-## Installation with CocoaPods
+## Requirements
 
-The repository includes a CocoaPods specification:
+- iOS 15.0 or later;
+- Xcode 15 or later (the package manifest is `swift-tools-version: 5.9`;
+  development and CI run on Xcode 26);
+- Swift Package Manager or CocoaPods.
 
-```ruby
-pod 'CallWaveKit', path: '/path/to/CallWaveKit'
+## Installation
+
+### Swift Package Manager
+
+In Xcode: **File → Add Package Dependencies**, enter
+`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.3.0` or later,
+and add the `CallWaveKit` product to your application target.
+
+Or in a `Package.swift`:
+
+```swift
+.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.3.0")
 ```
 
-For a remote repository, use a semantic-version tag:
+The product vends two modules: `CallWaveKit` (the Objective-C API) and
+`CallWaveKitAsync` (Swift concurrency on top of it). Nothing else is needed —
+`PJSIP.xcframework` ships with the package, with `arm64` for the device and
+`arm64` plus `x86_64` for the simulator.
+
+### CocoaPods
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.2.0'
+pod 'CallWaveKit', '~> 0.3'
 ```
 
-## Installation with Swift Package Manager
+Both modules land in a single `CallWaveKit` module under CocoaPods, so
+`import CallWaveKit` is enough.
 
-In Xcode select **File → Add Package Dependencies**, enter the repository URL,
-select a version starting with `0.2.0`, and add the `CallWaveKit` product to the
-application target. For local development, use **Add Local** and select this
-repository directory.
+To track the repository directly instead of the published pod — an unreleased
+fix, say — point at the tag:
 
-The package includes `PJSIP.xcframework` with these slices:
+```ruby
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.0'
+```
 
-- iOS device: `arm64`;
-- iOS Simulator: `arm64` and `x86_64`.
+## Host application settings
 
-No CocoaPods installation is required when using Swift Package Manager.
+Add `NSMicrophoneUsageDescription` to your `Info.plist` and enable three
+background modes: **Audio**, **Voice over IP** and **Remote notifications**.
+Without the VoIP mode the push never wakes the application.
 
-## Usage
+## Quick start
 
 ```swift
 import CallWaveKit
@@ -86,35 +88,68 @@ let configuration = CallWaveConfiguration(
 
 let calls = CallWaveClient(configuration: configuration)
 calls.delegate = coordinator
+calls.defaultCallerName = "Front door"
 
 try calls.start()
 calls.registerForVoIPPushes()
 ```
 
-Inject `calls` into the objects that need calling features. Keep a strong
-reference for the client lifetime. Between calls use `unregister()` or
-`logout()`; `stop()` destroys the PJSUA runtime and is for teardown only.
+That is the whole setup for the common case: CallWaveKit creates the
+`CXProvider` and the `PKPushRegistry`, reports the call, answers it when the
+user does, and brings up two-way audio.
 
-An application that already owns a `CXProvider` or a `PKPushRegistry` passes
-`options: []` and its own provider instead, and drives the client from its own
-delegates. See [CallWaveKit/README.md](CallWaveKit/README.md) for that mode,
-for per-push credentials, for DTMF and for the audio-session hooks.
+Opening the door is one call:
 
-PJSUA exposes a process-wide C runtime. CallWaveKit returns
-`CallWaveErrorEngineAlreadyRunning` if a second client calls `start()` while
-another client owns that runtime.
+```swift
+calls.sendDTMF("1234#") { error in … }
+```
 
-## Host application settings
+Keep a strong reference to the client for its lifetime and inject it into
+whatever needs calling features — there is no singleton. Between calls use
+`unregister()` or `logout()`; `stop()` destroys the PJSUA runtime and is for
+teardown only.
 
-Add `NSMicrophoneUsageDescription` to the host application. Enable these
-background modes:
+PJSUA has a process-wide C runtime, so only one client may run at a time:
+a second `start()` returns `CallWaveErrorEngineAlreadyRunning`.
 
-- Audio;
-- Voice over IP;
-- Remote notifications.
+## Documentation
 
-The delegate receives the PushKit token. Your application sends that token to
-your backend.
+**[CallWaveKit/README.md](CallWaveKit/README.md)** is the API guide: the
+host-owned CallKit/PushKit mode, per-push credentials, the engine and account
+settings, call waiting and hold, DTMF, call statistics, the audio-session
+hooks, logging, the Swift concurrency layer and the threading contract.
+
+[CHANGELOG.md](CHANGELOG.md) records every release and every breaking change.
+[RELEASING.md](RELEASING.md) is the maintainer's checklist for cutting one.
+
+## What it does
+
+- incoming SIP calls — one by default, call waiting and CallKit hold when the
+  engine is configured for more;
+- two-way voice through the PJSIP conference bridge, with per-call microphone
+  mute at the RTP capture connection;
+- answer, decline, hangup, mute and hold through CallKit;
+- DTMF over RFC 2833 with a SIP INFO fallback, which is how intercom doors
+  open;
+- UDP, TCP and TLS, with certificate verification on by default; optional SRTP,
+  outbound proxy, separate digest user, custom REGISTER headers, STUN/ICE and
+  codec priorities;
+- a configurable settle delay before `200 OK`, for PBXs that are not ready to
+  be answered the moment they send the INVITE, and a ring timeout that rejects
+  an unanswered call with `480`;
+- SIP account replacement without recreating the PJSUA runtime, for credentials
+  that arrive with every push;
+- PushKit wake-up handling with a correctly sequenced completion handler and a
+  deadline, so the handler always runs and the process is never killed with
+  `0xBAADCA11`;
+- recovery from Wi-Fi/cellular handovers through `pjsua_handle_ip_change()`;
+- per-call RTP/RTCP statistics: packet loss, jitter, round-trip time, codec;
+- `os_log` logging with identifier redaction on by default, a sink for the
+  host's own stack, and no PJSIP protocol trace in release builds;
+- a Swift concurrency layer: an `AsyncStream` of events and `async throws` call
+  actions;
+- an optional host-owned mode in which the application keeps its own
+  `CXProvider` and `PKPushRegistry`.
 
 ## Privacy manifest
 
@@ -138,21 +173,6 @@ pull request — see [.github/workflows/ci.yml](.github/workflows/ci.yml). The
 lint builds the pod into a synthetic application, which is what keeps the
 CocoaPods integration covered.
 
-## Requirements
-
-- iOS 15.0 or later;
-- Xcode 16 or later;
-- CocoaPods or Swift Package Manager;
-- bundled PJSIP 2.17 XCFramework.
-
-The checked-in `PJSIP.xcframework` was built with a minimum of iOS 16.0. It links
-into an application targeting iOS 15.0, but every object file produces a
-`built for newer 'iOS' version` linker warning. Rebuild it to silence them:
-
-```sh
-MIN_IOS_VERSION=15.0 ./Scripts/build-pjsip-xcframework.sh
-```
-
 ## Rebuilding PJSIP
 
 The checked-in binary can be reproduced with:
@@ -161,23 +181,28 @@ The checked-in binary can be reproduced with:
 ./Scripts/build-pjsip-xcframework.sh
 ```
 
-The script builds PJSIP 2.17 for iOS 15.0 or later. Override
-`PJSIP_VERSION`, `MIN_IOS_VERSION`, or `BUILD_JOBS` when necessary.
+The script builds PJSIP 2.17 for iOS 15.0 or later. Override `PJSIP_VERSION`,
+`MIN_IOS_VERSION` or `BUILD_JOBS` when necessary.
+
+The checked-in `PJSIP.xcframework` was built with a minimum of iOS 16.0. It
+links into an application targeting iOS 15.0, but every object file produces a
+`built for newer 'iOS' version` linker warning. Rebuild it to silence them:
+
+```sh
+MIN_IOS_VERSION=15.0 ./Scripts/build-pjsip-xcframework.sh
+```
 
 The XCFramework is 21 MB and every clone pays for it. For a tagged release,
 attach the zip instead and point the binary target at its URL:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.2.0
+./Scripts/package-pjsip-release.sh 0.3.0
 ```
 
 The script prints the archive's checksum and the `.binaryTarget(url:checksum:)`
 snippet to paste into `Package.swift`.
 
-PJSIP is distributed under GPLv2 or a separate commercial license. Review
-`Vendor/PJSIP-COPYING`, `Vendor/ThirdPartyLicenses`, and obtain the appropriate
-license before distributing a closed-source application.
-
 ## License
 
-MIT. See [LICENSE](LICENSE).
+CallWaveKit is MIT — see [LICENSE](LICENSE). The bundled PJSIP binary is not;
+see [Licensing](#licensing-read-this-before-shipping) above.
