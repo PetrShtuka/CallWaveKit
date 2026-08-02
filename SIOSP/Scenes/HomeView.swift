@@ -3,7 +3,7 @@ import UIKit
 import AVFoundation
 import MobileVLCKit
 
-// Определение IncomingCallView внутри файла HomeView.swift
+/// Full-screen prompt shown while the intercom is ringing.
 struct IncomingCallView: View {
     let callerInfo: String
     let onAccept: () -> Void
@@ -11,16 +11,16 @@ struct IncomingCallView: View {
     
     var body: some View {
         ZStack {
-            // Фоновый цвет
+            // Background
             Color(UIColor(red: 0.29, green: 0.478, blue: 0.604, alpha: 1.0))
                 .edgesIgnoringSafeArea(.all)
             
             VStack(spacing: 30) {
                 Spacer()
                 
-                // Информация о звонке
+                // Who is calling
                 VStack(spacing: 16) {
-                    Text("Входящий звонок")
+                    Text("Incoming call")
                         .font(.headline)
                         .foregroundColor(.white)
                     
@@ -32,9 +32,9 @@ struct IncomingCallView: View {
                 
                 Spacer()
                 
-                // Кнопки принятия/отклонения
+                // Decline / answer
                 HStack(spacing: 50) {
-                    // Кнопка отклонения
+                    // Decline
                     Button(action: onDecline) {
                         VStack {
                             Image(systemName: "phone.down.fill")
@@ -44,13 +44,13 @@ struct IncomingCallView: View {
                                 .background(Circle().fill(Color.red))
                                 .frame(width: 60, height: 60)
                             
-                            Text("Отклонить")
+                            Text("Decline")
                                 .font(.caption)
                                 .foregroundColor(.white)
                         }
                     }
                     
-                    // Кнопка принятия
+                    // Answer
                     Button(action: onAccept) {
                         VStack {
                             Image(systemName: "phone.fill")
@@ -60,7 +60,7 @@ struct IncomingCallView: View {
                                 .background(Circle().fill(Color.green))
                                 .frame(width: 60, height: 60)
                             
-                            Text("Ответить")
+                            Text("Answer")
                                 .font(.caption)
                                 .foregroundColor(.white)
                         }
@@ -73,7 +73,7 @@ struct IncomingCallView: View {
     }
 }
 
-// Определение ActiveCallView для отображения активного звонка
+/// Shown once the call is connected.
 struct ActiveCallView: View {
     let callerInfo: String
     let callDuration: String
@@ -81,7 +81,7 @@ struct ActiveCallView: View {
     
     var body: some View {
         VStack(spacing: 10) {
-            Text("Активный вызов с \(callerInfo)")
+            Text("In a call with \(callerInfo)")
                 .font(.headline)
                 .multilineTextAlignment(.center)
             
@@ -90,12 +90,12 @@ struct ActiveCallView: View {
                 .monospacedDigit()
                 .padding(.top, 8)
             
-            // Кнопка завершения вызова
+            // Hang up
             Button(action: onEndCall) {
                 HStack {
                     Image(systemName: "phone.down.fill")
                         .font(.system(size: 16))
-                    Text("Завершить")
+                    Text("End")
                 }
                 .padding(.vertical, 12)
                 .padding(.horizontal, 24)
@@ -110,18 +110,18 @@ struct ActiveCallView: View {
     }
 }
 
-// Определение UserInfoView для отображения информации о пользователе
+/// The signed-in SIP account.
 struct UserInfoView: View {
     let username: String
     let domain: String
     
     var body: some View {
         VStack {
-            Text("Добро пожаловать, \(username)!")
+            Text("Welcome, \(username)!")
                 .font(.headline)
                 .padding(.top, 10)
             
-            Text("Домен: \(domain)")
+            Text("Domain: \(domain)")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
@@ -138,7 +138,7 @@ struct HomeView: View {
 
     @State private var isCallActive = false
     @State private var isIncomingCall = false
-    @State private var callerInfo: String = "Домофон"
+    @State private var callerInfo: String = "Intercom"
     @State private var callStartTime: Date?
     @State private var callDuration: String = "00:00"
     @State private var showLogoutAlert = false
@@ -148,27 +148,27 @@ struct HomeView: View {
     @State private var networkErrorMessage = ""
     @State private var isVideoPlayerVisible = true
     
-    // RTSP-поток для домофона
+    // The intercom's RTSP stream.
     private let rtspUrl = "rtsp://92.39.70.62:60199/av0_0"
-    // VLC плеер
+    // VLC player.
     private let player = VLCMediaPlayer()
     
-    // Таймер для обновления продолжительности звонка
+    // Drives the call-duration label.
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     var body: some View {
         NavigationStack {
             ZStack {
-                // Основной контент
+                // Main content
                 VStack(spacing: 25) {
-                    // Информация о пользователе
+                    // Account summary
                     UserInfoView(
-                        username: UserDefaults.standard.string(forKey: "username") ?? "пользователь",
+                        username: UserDefaults.standard.string(forKey: "username") ?? "user",
                         domain: UserDefaults.standard.string(forKey: "domain") ?? ""
                     )
                     
-                    // Видеоплеер - показываем если пользователь выбрал его отображение
-                    // Теперь видео остается видимым и во время звонка
+                    // The video stays visible during a call as well, so the
+                    // user can see who is at the door while talking.
                     if isVideoPlayerVisible {
                         videoPlayerContent
                     }
@@ -176,26 +176,26 @@ struct HomeView: View {
                     Spacer()
                     
                     if isCallActive {
-                        // Отображение информации об активном звонке
+                        // Connected call
                         ActiveCallView(
                             callerInfo: callerInfo,
                             callDuration: callDuration,
                             onEndCall: endCall
                         )
                     } else if !isVideoPlayerVisible {
-                        // Стандартная информация в неактивном состоянии без видеоплеера
+                        // Idle, with the video hidden
                         VStack {
-                            Text("Приложение готово принимать входящие звонки")
+                            Text("Ready to receive incoming calls")
                                 .font(.headline)
                                 .multilineTextAlignment(.center)
                                 .padding()
                             
-                            Text("Для звонка с домофона наберите 22")
+                            Text("Dial 22 to call from the intercom")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .padding(.bottom, 5)
                             
-                            Text("Учетная запись: \(UserDefaults.standard.string(forKey: "username") ?? "412016022")")
+                            Text("Account: \(UserDefaults.standard.string(forKey: "username") ?? "412016022")")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .padding(.bottom, 20)
@@ -204,7 +204,7 @@ struct HomeView: View {
                     
                     Spacer()
                     
-                    // Кнопка для переключения видимости видеоплеера
+                    // Show or hide the video stream
                     Button(action: {
                         withAnimation {
                             isVideoPlayerVisible.toggle()
@@ -212,7 +212,7 @@ struct HomeView: View {
                     }) {
                         HStack {
                             Image(systemName: isVideoPlayerVisible ? "eye.slash" : "eye.fill")
-                            Text(isVideoPlayerVisible ? "Скрыть видеопоток" : "Показать видеопоток")
+                            Text(isVideoPlayerVisible ? "Hide video" : "Show video")
                         }
                         .padding(.vertical, 8)
                         .padding(.horizontal, 16)
@@ -223,7 +223,7 @@ struct HomeView: View {
                 }
                 .blur(radius: isIncomingCall ? 3 : 0)
                 
-                // Слой для входящего звонка
+                // Incoming-call overlay
                 if isIncomingCall {
                     IncomingCallView(
                         callerInfo: callerInfo,
@@ -234,10 +234,10 @@ struct HomeView: View {
                     .zIndex(1)
                 }
             }
-            .navigationTitle("Мажордом Звонилка")
+            .navigationTitle("Majordomo Dialer")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Выход") {
+                    Button("Sign out") {
                         showLogoutAlert = true
                     }
                 }
@@ -252,25 +252,25 @@ struct HomeView: View {
             .onDisappear {
                 cleanupVideoPlayer()
             }
-            .alert("Состояние SIP", isPresented: $showSIPStatusAlert) {
+            .alert("SIP status", isPresented: $showSIPStatusAlert) {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(sipStatusMessage)
             }
-            .alert("Ошибка сети", isPresented: $showNetworkErrorAlert) {
-                Button("Повторить", role: .cancel) {
+            .alert("Network error", isPresented: $showNetworkErrorAlert) {
+                Button("Retry", role: .cancel) {
                     checkSIPRegistration()
                 }
             } message: {
                 Text(networkErrorMessage)
             }
-            .alert("Выход", isPresented: $showLogoutAlert) {
-                Button("Отмена", role: .cancel) { }
-                Button("Выйти", role: .destructive) {
+            .alert("Sign out", isPresented: $showLogoutAlert) {
+                Button("Cancel", role: .cancel) { }
+                Button("Sign out", role: .destructive) {
                     logout()
                 }
             } message: {
-                Text("Вы уверены, что хотите выйти?")
+                Text("Are you sure you want to sign out?")
             }
             .onReceive(timer) { _ in
                 updateCallDuration()
@@ -278,7 +278,7 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - Вспомогательные представления
+    // MARK: - Subviews
     
     private var videoPlayerContent: some View {
         VStack {
@@ -292,11 +292,11 @@ struct HomeView: View {
                 )
                 .padding(.vertical, 10)
             
-            // Кнопка для обновления видеопотока
+            // Restart the stream
             Button(action: refreshVideoStream) {
                 HStack {
                     Image(systemName: "play.circle.fill")
-                    Text("Обновить поток")
+                    Text("Reload stream")
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, 16)
@@ -307,19 +307,19 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - Вспомогательные функции
+    // MARK: - Video
     
     private func setupVideoPlayer() {
-        // Звук RTSP всегда выключен
+        // The RTSP audio is always off: the call audio comes from SIP.
         player.audio?.volume = 0
         player.audio?.isMuted = true
         
-        // Запускаем плеер
+        // Start playing.
         refreshVideoStream()
     }
     
     private func cleanupVideoPlayer() {
-        // Останавливаем плеер при закрытии вида
+        // Stop the player when the view goes away.
         if player.isPlaying {
             player.stop()
         }
@@ -330,11 +330,11 @@ struct HomeView: View {
             player.stop()
         } 
         
-        // Создаем и запускаем новый поток
+        // Build a fresh stream and start it.
         if let url = URL(string: rtspUrl) {
             let media = VLCMedia(url: url)
             
-            // Применяем параметры RTSP с отключенным звуком
+            // RTSP options, with the audio muted.
             let options = [
                 "network-caching": "3000",
                 "live-caching": "3000",
@@ -353,46 +353,46 @@ struct HomeView: View {
             player.media = media
             player.play()
             
-            print("✅ RTSP плеер запущен (поток: \(rtspUrl))")
+            print("✅ RTSP player started (stream: \(rtspUrl))")
         } else {
-            print("❌ Ошибка: не удалось создать URL для видеопотока")
+            print("❌ Could not build a URL for the video stream")
         }
     }
     
-    // MARK: - Функции
+    // MARK: - Calls
     
     private func setupIncomingCallHandler() {
-        // Настраиваем обработчик входящего звонка
+        // Incoming call.
         self.calls.configureIncomingCall {
-            print("⚡️ Обработка входящего звонка в SwiftUI")
+            print("⚡️ Handling an incoming call in SwiftUI")
             
-            // Получаем информацию о звонящем
+            // Who is calling.
             DispatchQueue.main.async {
-                let caller = self.calls.getCurrentCallerInfo() as String? ?? "Домофон"
-                callerInfo = caller.isEmpty ? "Домофон" : caller
+                let caller = self.calls.getCurrentCallerInfo() as String? ?? "Intercom"
+                callerInfo = caller.isEmpty ? "Intercom" : caller
                 
-                // Проверяем, не был ли звонок уже принят через CallKit
+                // The user may already have answered from the CallKit screen.
                 let callStatus = self.calls.getCurrentCallStatus()
-                if callStatus == 1 { // 1 = звонок принят/активен
-                    print("⚡️ Звонок уже принят через CallKit, обновляем UI напрямую")
+                if callStatus == 1 { // 1 = answered or active
+                    print("⚡️ Already answered through CallKit, updating the UI directly")
                     withAnimation {
                         isIncomingCall = false
                         isCallActive = true
                         callStartTime = Date()
                     }
                 } else {
-                    // Показываем входящий звонок
+                    // Show the incoming call.
                     withAnimation(.easeInOut(duration: 0.3)) {
                         isIncomingCall = true
                     }
                     
-                    // Запускаем таймер проверки, не ответили ли на звонок через CallKit
+                    // Poll in case the answer comes from the CallKit screen.
                     startCallKitStateCheckTimer()
                 }
             }
         }
         
-        // Настраиваем обработчик завершения звонка
+        // Call ended.
         self.calls.configureEndCall {
             DispatchQueue.main.async {
                 withAnimation {
@@ -412,14 +412,14 @@ struct HomeView: View {
             }
         }
         
-        // Особый обработчик для ответа на звонок через CallKit
-        // Этот обработчик критичен для синхронизации UI при ответе через системный интерфейс
+        // Answering from the system call screen only shows up as an audio
+        // session activation, and the UI has to follow it.
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("CXProviderDidActivateAudioSession"), 
             object: nil,
             queue: .main
         ) { _ in
-            print("📱 CallKit активировал аудио сессию - это означает ответ на звонок")
+            print("📱 CallKit activated the audio session, so the call was answered")
             withAnimation {
                 self.isIncomingCall = false
                 self.isCallActive = true
@@ -427,8 +427,7 @@ struct HomeView: View {
             }
         }
         
-        // Добавляем наблюдатель за ответом на звонок через CallKit
-        // Это необходимо, чтобы синхронизировать UI приложения с состоянием CallKit
+        // Keeps the application UI in step with the CallKit call state.
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("CallKitCallStateChanged"),
             object: nil,
@@ -436,24 +435,24 @@ struct HomeView: View {
         ) { notification in
             guard let state = notification.userInfo?["state"] as? String else { return }
             
-            print("📱 Получено уведомление о событии CallKit: \(state)")
+            print("📱 CallKit event: \(state)")
             
             switch state {
             case "answered":
-                print("📱 Звонок принят через CallKit - обновляем UI")
+                print("📱 Answered through CallKit, updating the UI")
                 withAnimation {
                     self.isIncomingCall = false
                     self.isCallActive = true
                     self.callStartTime = Date()
                 }
             case "ended":
-                print("📱 Звонок завершен через CallKit - обновляем UI")
+                print("📱 Ended through CallKit, updating the UI")
                 withAnimation {
                     self.isIncomingCall = false
                     self.isCallActive = false
                 }
             case "rejected":
-                print("📱 Звонок отклонен через CallKit - обновляем UI")
+                print("📱 Declined through CallKit, updating the UI")
                 withAnimation {
                     self.isIncomingCall = false
                 }
@@ -463,15 +462,16 @@ struct HomeView: View {
         }
     }
     
-    // Таймер для проверки состояния звонка через CallKit
+    /// Polls the call state, because answering from the CallKit screen does
+    /// not go through this view.
     private func startCallKitStateCheckTimer() {
-        // Проверяем каждые 0.5 секунд, не ответили ли на звонок через CallKit
+        // Check twice a second.
         var checkCount = 0
         let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [self] timer in
-            // Проверяем, принят ли звонок через CallKit
+            // Answered?
             let callStatus = self.calls.getCurrentCallStatus()
-            if isIncomingCall && callStatus == 1 { // 1 = звонок принят/активен
-                print("⚡️ Обнаружено, что звонок принят через CallKit")
+            if isIncomingCall && callStatus == 1 { // 1 = answered or active
+                print("⚡️ The call was answered through CallKit")
                 withAnimation {
                     self.isIncomingCall = false
                     self.isCallActive = true
@@ -480,9 +480,9 @@ struct HomeView: View {
                 timer.invalidate()
             }
             
-            // Проверяем, завершен ли звонок
-            if callStatus == 0 && (isIncomingCall || isCallActive) { // 0 = нет активных звонков
-                print("⚡️ Обнаружено, что звонок завершен через CallKit")
+            // Ended?
+            if callStatus == 0 && (isIncomingCall || isCallActive) { // 0 = no active call
+                print("⚡️ The call was ended through CallKit")
                 withAnimation {
                     self.isIncomingCall = false
                     self.isCallActive = false
@@ -490,15 +490,15 @@ struct HomeView: View {
                 timer.invalidate()
             }
             
-            // Ограничиваем количество проверок (примерно 10 секунд)
+            // Give up after roughly ten seconds.
             checkCount += 1
             if checkCount > 20 {
-                print("⏱️ Остановка таймера проверки CallKit после 20 попыток")
+                print("⏱️ Stopping the CallKit poll after 20 attempts")
                 timer.invalidate()
             }
         }
         
-        // Убеждаемся, что таймер добавлен в основной цикл выполнения
+        // Keep firing while the user is scrolling.
         RunLoop.current.add(timer, forMode: .common)
     }
     
@@ -506,22 +506,22 @@ struct HomeView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             if self.calls.isRegistered() {
                 print("✅ SIP registration active")
-                sipStatusMessage = "Успешно зарегистрирован на SIP сервере"
+                sipStatusMessage = "Registered with the SIP server"
             } else {
                 print("⚠️ SIP registration not active, reconnecting...")
                 self.calls.reRegister()
-                sipStatusMessage = "Регистрация не активна. Подключение..."
+                sipStatusMessage = "Not registered. Connecting…"
             }
             showSIPStatusAlert = true
         }
     }
     
     private func acceptCall() {
-        print("⚡️ Звонок принят из пользовательского интерфейса")
+        print("⚡️ Call answered from the application UI")
 
         self.calls.answer { error in
             if let error {
-                print("❌ Ошибка ответа: \(error)")
+                print("❌ Answering failed: \(error)")
                 return
             }
             DispatchQueue.main.async {
@@ -535,11 +535,11 @@ struct HomeView: View {
     }
     
     private func declineCall() {
-        print("⚡️ Звонок отклонен")
+        print("⚡️ Call declined")
         
         self.calls.decline { error in
             if let error {
-                print("❌ Ошибка отклонения звонка: \(error)")
+                print("❌ Declining failed: \(error)")
             }
         }
         
@@ -552,7 +552,7 @@ struct HomeView: View {
     private func endCall() {
         self.calls.hangup { error in
             if let error {
-                print("❌ Ошибка завершения звонка: \(error)")
+                print("❌ Hanging up failed: \(error)")
             }
         }
         
@@ -563,18 +563,18 @@ struct HomeView: View {
     }
     
     private func logout() {
-        // Сбрасываем флаг входа в систему
+        // Forget the session.
         UserDefaults.standard.set(false, forKey: "isLoggedIn")
         UserDefaults.standard.removeObject(forKey: "domain")
         UserDefaults.standard.removeObject(forKey: "username")
         UserDefaults.standard.removeObject(forKey: "password")
         
-        // Подготавливаем уведомление для AppDelegate, чтобы обновить root view controller
+        // AppDelegate swaps the root view controller on this notification.
         NotificationCenter.default.post(name: NSNotification.Name("LogoutNotification"), object: nil)
     }
     
     private func setupNetworkErrorObserver() {
-        // Регистрируем обработчик уведомлений об ошибках сети
+        // Surface network errors reported by the SIP layer.
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("SIPNetworkError"),
             object: nil,
@@ -596,31 +596,31 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - Отслеживание состояния активного звонка
+    // MARK: - Call state at launch
     
-    // Запускается на старте для проверки текущего состояния звонков
+    /// Catches a call that was already in progress, for instance when the
+    /// application was relaunched during one.
     private func checkCallStateOnStartup() {
-        // Отложенная проверка, чтобы UI успел загрузиться
+        // Delayed, so the UI has finished loading.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            // Проверяем, есть ли уже активный звонок (например, если приложение было перезапущено во время звонка)
+            // Is there a call already?
             let callStatus = self.calls.getCurrentCallStatus()
-            if callStatus != 0 { // Если есть какой-то звонок (статус не 0)
-                print("⚡️ Обнаружен активный звонок при запуске - обновляем UI")
+            if callStatus != 0 { // 0 = no call
+                print("⚡️ A call was already in progress at launch, updating the UI")
                 
-                // Получаем информацию о звонящем
-                let caller = self.calls.getCurrentCallerInfo() as String? ?? "Домофон"
-                callerInfo = caller.isEmpty ? "Домофон" : caller
+                // Who is calling.
+                let caller = self.calls.getCurrentCallerInfo() as String? ?? "Intercom"
+                callerInfo = caller.isEmpty ? "Intercom" : caller
                 
-                // Проверяем состояние звонка
-                if callStatus == 1 { // 1 = звонок принят/активен
-                    // Звонок уже был принят - показываем активный звонок
+                // Connected, or still ringing?
+                if callStatus == 1 { // 1 = answered or active
                     withAnimation {
                         isIncomingCall = false
                         isCallActive = true
-                        callStartTime = Date() // Приблизительное время
+                        callStartTime = Date() // Approximate: the real start is lost.
                     }
                 } else {
-                    // Звонок еще не принят - показываем входящий звонок
+                    // Still ringing.
                     withAnimation {
                         isIncomingCall = true
                         isCallActive = false
@@ -628,8 +628,8 @@ struct HomeView: View {
                 }
             }
             
-            // Отправляем запрос на проверку состояния звонка в CallKit
-            // Это поможет синхронизировать состояние, если звонок ответили через CallKit
+            // Ask for a CallKit state check, in case the call was answered
+            // from the system screen before this view existed.
             NotificationCenter.default.post(name: NSNotification.Name("CheckCallKitState"), object: nil)
         }
     }

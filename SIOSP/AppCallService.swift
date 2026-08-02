@@ -12,7 +12,7 @@ final class AppCallService: NSObject, CallWaveClientDelegate {
     private var endedHandler: (() -> Void)?
 
     var currentCallUUID: UUID? { client?.currentCallUUID }
-    var currentCaller: String { client?.currentCaller ?? "Домофон" }
+    var currentCaller: String { client?.currentCaller ?? "Intercom" }
     var registered: Bool { client?.isRegistered ?? false }
 
     @discardableResult
@@ -58,7 +58,7 @@ final class AppCallService: NSObject, CallWaveClientDelegate {
             engineConfiguration: engine
         )
         // The library ships a neutral fallback; the product name belongs here.
-        client.defaultCallerName = "Домофон"
+        client.defaultCallerName = "Intercom"
         client.delegate = self
         return client
     }

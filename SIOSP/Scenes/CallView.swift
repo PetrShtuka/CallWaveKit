@@ -59,7 +59,7 @@ struct CallView: View {
                                     .foregroundColor(speakerEnabled ? .black : .white)
                             }
                             
-                            Text("Динамик")
+                            Text("Speaker")
                                 .font(.caption)
                                 .foregroundColor(.white)
                                 .padding(.top, 5)
@@ -79,7 +79,7 @@ struct CallView: View {
                                     .foregroundColor(micMuted ? .black : .white)
                             }
                             
-                            Text("Микрофон")
+                            Text("Microphone")
                                 .font(.caption)
                                 .foregroundColor(.white)
                                 .padding(.top, 5)
@@ -162,7 +162,7 @@ struct CallView_Previews: PreviewProvider {
         CallView(
             calls: AppCallService(),
             callUUID: UUID(),
-            callerName: "Домофон",
+            callerName: "Intercom",
             callerNumber: "22",
             callStartTime: Date(),
             onEnd: {}

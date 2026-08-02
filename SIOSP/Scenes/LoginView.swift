@@ -19,28 +19,28 @@ struct LoginView: View {
                 
                 ScrollView {
                     VStack(spacing: 20) {
-                        // Заголовок
+                        // Title
                         VStack {
-                            Text("Мажордом Звонилка")
+                            Text("Majordomo Dialer")
                                 .font(.largeTitle)
                                 .fontWeight(.bold)
                                 .padding(.top, 30)
                             
-                            Text("Введите данные для подключения к SIP")
+                            Text("Enter the details of your SIP account")
                                 .font(.headline)
                                 .foregroundColor(.secondary)
                                 .padding(.bottom, 10)
                         }
                         
-                        // Форма входа
+                        // Sign-in form
                         VStack(spacing: 15) {
-                            // Домен SIP сервера
+                            // SIP server domain
                             VStack(alignment: .leading) {
-                                Text("Домен SIP сервера (с портом)")
+                                Text("SIP server domain (with port)")
                                     .font(.headline)
                                     .foregroundColor(.secondary)
                                 
-                                TextField("Например: sip.example.com:5060", text: $domain)
+                                TextField("For example: sip.example.com:5060", text: $domain)
                                     .padding()
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
@@ -49,13 +49,13 @@ struct LoginView: View {
                                     .disableAutocorrection(true)
                             }
                             
-                            // Имя пользователя
+                            // User name
                             VStack(alignment: .leading) {
-                                Text("Логин")
+                                Text("User name")
                                     .font(.headline)
                                     .foregroundColor(.secondary)
                                 
-                                TextField("Ваше имя пользователя SIP", text: $username)
+                                TextField("Your SIP user name", text: $username)
                                     .padding()
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
@@ -63,13 +63,13 @@ struct LoginView: View {
                                     .disableAutocorrection(true)
                             }
                             
-                            // Пароль
+                            // Password
                             VStack(alignment: .leading) {
-                                Text("Пароль")
+                                Text("Password")
                                     .font(.headline)
                                     .foregroundColor(.secondary)
                                 
-                                SecureField("Ваш пароль", text: $password)
+                                SecureField("Your password", text: $password)
                                     .padding()
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
@@ -77,9 +77,9 @@ struct LoginView: View {
                         }
                         .padding(.horizontal)
                         
-                        // Информация для пользователя
+                        // Hint for the user
                         VStack {
-                            Text("Для звонка с домофона наберите 22")
+                            Text("Dial 22 to call from the intercom")
                                 .padding()
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
@@ -87,7 +87,7 @@ struct LoginView: View {
                         }
                         .padding(.top, 20)
                         
-                        // Кнопка входа
+                        // Sign-in button
                         Button(action: {
                             login()
                         }) {
@@ -97,7 +97,7 @@ struct LoginView: View {
                                         .padding(.trailing, 5)
                                 }
                                 
-                                Text(isLoggingIn ? "Подключение..." : "Войти")
+                                Text(isLoggingIn ? "Connecting…" : "Sign in")
                                     .fontWeight(.bold)
                             }
                             .frame(maxWidth: .infinity)
@@ -127,29 +127,29 @@ struct LoginView: View {
         }
     }
     
-    // MARK: - Функции
+    // MARK: - Actions
     
     private func login() {
-        // Проверяем заполнение полей
+        // Every field is required.
         guard !domain.isEmpty else {
-            showAlert(title: "Ошибка", message: "Введите домен SIP сервера")
+            showAlert(title: "Error", message: "Enter the SIP server domain")
             return
         }
         
         guard !username.isEmpty else {
-            showAlert(title: "Ошибка", message: "Введите имя пользователя")
+            showAlert(title: "Error", message: "Enter the user name")
             return
         }
         
         guard !password.isEmpty else {
-            showAlert(title: "Ошибка", message: "Введите пароль")
+            showAlert(title: "Error", message: "Enter the password")
             return
         }
         
-        // Показываем индикатор загрузки
+        // Show the progress indicator.
         isLoggingIn = true
         
-        // Сохраняем данные в UserDefaults
+        // Persist the credentials.
         UserDefaults.standard.set(domain.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "domain")
         UserDefaults.standard.set(username, forKey: "username")
         UserDefaults.standard.set(password, forKey: "password")
@@ -162,7 +162,7 @@ struct LoginView: View {
             }
         }
         
-        // Отправляем уведомление о входе в систему
+        // Tell the rest of the app that a session exists.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             NotificationCenter.default.post(name: NSNotification.Name("LoginNotification"), object: nil)
             isLoggingIn = false
@@ -191,7 +191,7 @@ class LoginHostingController: UIHostingController<LoginView> {
     }
 }
 
-// MARK: - Предварительный просмотр
+// MARK: - Preview
 struct LoginView_Previews: PreviewProvider {
     static var previews: some View {
         LoginView(calls: AppCallService())

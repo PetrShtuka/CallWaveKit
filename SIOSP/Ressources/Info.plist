@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Мажордом Звонилка</string>
+	<string>Majordomo Dialer</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -27,9 +27,9 @@
 	<key>MinimumOSVersion</key>
 	<string>16.0</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Камера необходима для видеовызовов</string>
+	<string>The camera is required for video calls.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Микрофон необходим для совершения голосовых вызовов</string>
+	<string>The microphone is required to make voice calls.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
