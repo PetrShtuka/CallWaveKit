@@ -4,7 +4,10 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-02
+
+0.2.0 was staged during this work but never tagged or published, so it does
+not appear here.
 
 ### Repository
 
@@ -108,7 +111,7 @@ bump may contain breaking changes, and each one is listed below.
 - **Unit tests and CI.** 42 tests over URI construction, domain parsing,
   configuration equality, caller-name formatting, DTMF normalization and the
   client's property contracts, plus a GitHub Actions workflow that runs them,
-  builds the device slice, lints the podspec and builds the demo application.
+  builds the device slice and lints the podspec.
 - **`Scripts/run-package-tests.sh`** and **`Scripts/package-pjsip-release.sh`**
   (zips the XCFramework and prints the SPM checksum, so a release can stop
   carrying 21 MB of binary in git).
