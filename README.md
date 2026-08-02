@@ -3,56 +3,63 @@
 CallWaveKit provides incoming SIP calls on iOS. The library owns SIP
 registration, CallKit, PushKit and the PJSIP audio conference.
 
-The repository contains:
-
-- `CallWaveKit`: the reusable library;
-- `SIOSP`: a demo application that injects a `CallWaveClient`.
+The repository contains the library and nothing else: `CallWaveKit` (the
+Objective-C core), `CallWaveKitAsync` (the Swift concurrency layer), their
+tests, and the bundled PJSIP binary. Integration examples live in
+[CallWaveKit/README.md](CallWaveKit/README.md).
 
 ## Features
 
-- one incoming SIP call at a time;
+- incoming SIP calls — one by default, call waiting and CallKit hold when the
+  engine is configured for more;
 - two-way voice through the PJSIP conference bridge;
-- microphone mute at the RTP capture connection;
-- answer, decline and hangup actions through CallKit;
+- microphone mute at the RTP capture connection, per call;
+- answer, decline, hangup, mute and hold through CallKit;
 - a configurable settle delay before `200 OK`, for PBXs that are not ready to
   be answered the moment they send the INVITE;
+- a ring timeout that rejects an unanswered call with `480`;
 - DTMF over RFC 2833 with a SIP INFO fallback;
-- separate `host`, `port` and `transport` (UDP, TCP, TLS);
+- separate `host`, `port` and `transport` (UDP, TCP, TLS), with certificate
+  verification on by default;
+- optional SRTP, outbound proxy, separate digest user, custom REGISTER headers,
+  STUN/ICE and codec priorities;
 - SIP account replacement without recreating the PJSUA runtime, for
   credentials that arrive with every push;
 - unregister and logout separately from stack teardown;
-- PushKit wake-up handling with a correctly sequenced completion handler;
+- PushKit wake-up handling with a correctly sequenced completion handler and a
+  deadline, so the handler always runs;
+- recovery from Wi-Fi/cellular handovers via `pjsua_handle_ip_change()`;
+- per-call RTP/RTCP statistics;
+- `os_log`-based logging with identifier redaction, a host sink, and no PJSIP
+  protocol trace in release builds;
+- a Swift concurrency layer: `AsyncStream` of events, `async throws` call
+  actions;
 - an optional host-owned mode in which the application keeps its own
   `CXProvider` and `PKPushRegistry`.
 
 CallWaveKit does not make outgoing calls.
+
+See [CHANGELOG.md](CHANGELOG.md) for the version history, including the
+breaking changes in the current development version.
 
 ## Installation with CocoaPods
 
 The repository includes a CocoaPods specification:
 
 ```ruby
-pod 'CallWaveKit', path: '/path/to/CallWave'
+pod 'CallWaveKit', path: '/path/to/CallWaveKit'
 ```
-
-Run:
-
-```sh
-pod install
-```
-
-Open `SIOSP.xcworkspace` to run the demo.
 
 For a remote repository, use a semantic-version tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWave.git', tag: '0.1.0'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.2.0'
 ```
 
 ## Installation with Swift Package Manager
 
 In Xcode select **File → Add Package Dependencies**, enter the repository URL,
-select a version starting with `0.1.0`, and add the `CallWaveKit` product to the
+select a version starting with `0.2.0`, and add the `CallWaveKit` product to the
 application target. For local development, use **Add Local** and select this
 repository directory.
 
@@ -109,6 +116,28 @@ background modes:
 The delegate receives the PushKit token. Your application sends that token to
 your backend.
 
+## Privacy manifest
+
+`CallWaveKit/PrivacyInfo.xcprivacy` ships inside the library's resource bundle,
+which App Store submission requires of a third-party SDK. CallWaveKit declares
+no tracking, no collected data and no required-reason API usage; the bundled
+PJSIP binary was checked for those APIs and uses none of them. Re-run that check
+if you rebuild the XCFramework with different options.
+
+## Tests
+
+```sh
+./Scripts/run-package-tests.sh
+```
+
+The script picks an available simulator on its own. `ACTION=build` compiles
+without running the tests, and `DESTINATION=…` overrides the simulator.
+
+The same script, a device-slice build and a podspec lint run on every push and
+pull request — see [.github/workflows/ci.yml](.github/workflows/ci.yml). The
+lint builds the pod into a synthetic application, which is what keeps the
+CocoaPods integration covered.
+
 ## Requirements
 
 - iOS 15.0 or later;
@@ -134,6 +163,16 @@ The checked-in binary can be reproduced with:
 
 The script builds PJSIP 2.17 for iOS 15.0 or later. Override
 `PJSIP_VERSION`, `MIN_IOS_VERSION`, or `BUILD_JOBS` when necessary.
+
+The XCFramework is 21 MB and every clone pays for it. For a tagged release,
+attach the zip instead and point the binary target at its URL:
+
+```sh
+./Scripts/package-pjsip-release.sh 0.2.0
+```
+
+The script prints the archive's checksum and the `.binaryTarget(url:checksum:)`
+snippet to paste into `Package.swift`.
 
 PJSIP is distributed under GPLv2 or a separate commercial license. Review
 `Vendor/PJSIP-COPYING`, `Vendor/ThirdPartyLicenses`, and obtain the appropriate
