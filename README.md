@@ -120,7 +120,10 @@ settings, call waiting and hold, DTMF, call statistics, the audio-session
 hooks, logging, the Swift concurrency layer and the threading contract.
 
 [CHANGELOG.md](CHANGELOG.md) records every release and every breaking change.
-[RELEASING.md](RELEASING.md) is the maintainer's checklist for cutting one.
+[RELEASING.md](RELEASING.md) is the maintainer's checklist for cutting one, and
+[FIELD-TESTING.md](FIELD-TESTING.md) is the pass that has to be done by hand on a
+device against a real intercom — the unit tests cover none of the answer path,
+the push path or the audio session.
 
 ## What it does
 

@@ -24,6 +24,23 @@ shows who currently owns the pod name.
 
 ## Per release
 
+### 0. Verify the behaviour
+
+Mechanics come later; this is the step that decides whether the release is
+shippable at all.
+
+```sh
+./Scripts/run-package-tests.sh
+```
+
+Then work through [FIELD-TESTING.md](FIELD-TESTING.md) on a device against a real
+intercom. The unit tests cover none of the answer path, the push path, the audio
+session or the registration lifecycle — those only break in the field, and
+`pod spec lint` in step 4 checks packaging, not behaviour.
+
+For a release that only touches documentation or packaging, the field pass can be
+skipped — say so in the release notes rather than leaving it ambiguous.
+
 ### 1. Bump the version
 
 The version appears in five places; `spec.version` is the one that matters, the
