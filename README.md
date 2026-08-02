@@ -3,10 +3,10 @@
 CallWaveKit provides incoming SIP calls on iOS. The library owns SIP
 registration, CallKit, PushKit and the PJSIP audio conference.
 
-The repository contains:
-
-- `CallWaveKit`: the reusable library;
-- `SIOSP`: a demo application that injects a `CallWaveClient`.
+The repository contains the library and nothing else: `CallWaveKit` (the
+Objective-C core), `CallWaveKitAsync` (the Swift concurrency layer), their
+tests, and the bundled PJSIP binary. Integration examples live in
+[CallWaveKit/README.md](CallWaveKit/README.md).
 
 ## Features
 
@@ -47,16 +47,8 @@ breaking changes in the current development version.
 The repository includes a CocoaPods specification:
 
 ```ruby
-pod 'CallWaveKit', path: '/path/to/CallWave'
+pod 'CallWaveKit', path: '/path/to/CallWaveKit'
 ```
-
-Run:
-
-```sh
-pod install
-```
-
-Open `SIOSP.xcworkspace` to run the demo.
 
 For a remote repository, use a semantic-version tag:
 
@@ -67,7 +59,7 @@ pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0
 ## Installation with Swift Package Manager
 
 In Xcode select **File → Add Package Dependencies**, enter the repository URL,
-select a version starting with `0.1.0`, and add the `CallWaveKit` product to the
+select a version starting with `0.2.0`, and add the `CallWaveKit` product to the
 application target. For local development, use **Add Local** and select this
 repository directory.
 
@@ -138,13 +130,13 @@ if you rebuild the XCFramework with different options.
 ./Scripts/run-package-tests.sh
 ```
 
-`xcodebuild` prefers `SIOSP.xcodeproj` over `Package.swift` when both sit in the
-repository root, so the script stages the package on its own and picks an
-available simulator. `ACTION=build` compiles without running the tests, and
-`DESTINATION=…` overrides the simulator.
+The script picks an available simulator on its own. `ACTION=build` compiles
+without running the tests, and `DESTINATION=…` overrides the simulator.
 
-The same script, a podspec lint and a demo-application build run on every push
-and pull request — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+The same script, a device-slice build and a podspec lint run on every push and
+pull request — see [.github/workflows/ci.yml](.github/workflows/ci.yml). The
+lint builds the pod into a synthetic application, which is what keeps the
+CocoaPods integration covered.
 
 ## Requirements
 

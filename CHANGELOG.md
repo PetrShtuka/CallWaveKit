@@ -6,6 +6,15 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Repository
+
+- **The SIOSP demo application is gone.** It was a fork of an unrelated 2019
+  project, it was the only reason the repository carried a CocoaPods
+  integration and a MobileVLCKit dependency, and it hardcoded somebody's RTSP
+  camera address. Integration examples live in `CallWaveKit/README.md`; the
+  CocoaPods build stays covered by `pod lib lint`, which compiles the pod into
+  a synthetic application.
+
 ### Breaking
 
 - **TLS certificates are verified by default.** `CallWaveEngineConfiguration`
