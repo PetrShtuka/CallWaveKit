@@ -53,11 +53,18 @@ The product vends two modules: `CallWaveKit` (the Objective-C API) and
 ### CocoaPods
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.0'
+pod 'CallWaveKit', '~> 0.3'
 ```
 
 Both modules land in a single `CallWaveKit` module under CocoaPods, so
 `import CallWaveKit` is enough.
+
+To track the repository directly instead of the published pod — an unreleased
+fix, say — point at the tag:
+
+```ruby
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.0'
+```
 
 ## Host application settings
 
@@ -113,6 +120,7 @@ settings, call waiting and hold, DTMF, call statistics, the audio-session
 hooks, logging, the Swift concurrency layer and the threading contract.
 
 [CHANGELOG.md](CHANGELOG.md) records every release and every breaking change.
+[RELEASING.md](RELEASING.md) is the maintainer's checklist for cutting one.
 
 ## What it does
 
