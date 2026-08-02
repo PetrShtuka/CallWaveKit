@@ -39,7 +39,7 @@ rm -f "$ARCHIVE"
 ( cd "$ROOT/Vendor" && zip -q -r -X "$ARCHIVE" PJSIP.xcframework )
 
 CHECKSUM="$(swift package compute-checksum "$ARCHIVE")"
-URL="https://github.com/PetrShtuka/CallWave/releases/download/$VERSION/PJSIP.xcframework.zip"
+URL="https://github.com/PetrShtuka/CallWaveKit/releases/download/$VERSION/PJSIP.xcframework.zip"
 
 cat <<SNIPPET
 

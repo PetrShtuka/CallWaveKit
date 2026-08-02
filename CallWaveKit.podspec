@@ -7,10 +7,13 @@ Pod::Spec.new do |spec|
     CallKit coordination, PushKit wake-up handling, two-way audio, RTP mute,
     DTMF and network-change recovery.
   DESC
-  spec.homepage = 'https://github.com/PetrShtuka/CallWave'
+  spec.homepage = 'https://github.com/PetrShtuka/CallWaveKit'
   spec.license = { type: 'MIT', file: 'LICENSE' }
   spec.author = { 'Petr Shtuka' => 'pitmailcom@gmail.com' }
-  spec.source = { git: 'https://github.com/PetrShtuka/CallWave.git', tag: spec.version.to_s }
+  spec.source = {
+    git: 'https://github.com/PetrShtuka/CallWaveKit.git',
+    tag: spec.version.to_s
+  }
 
   spec.platform = :ios, '15.0'
   spec.requires_arc = true

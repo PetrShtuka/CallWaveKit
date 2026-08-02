@@ -61,7 +61,7 @@ Open `SIOSP.xcworkspace` to run the demo.
 For a remote repository, use a semantic-version tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWave.git', tag: '0.1.0'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.2.0'
 ```
 
 ## Installation with Swift Package Manager
