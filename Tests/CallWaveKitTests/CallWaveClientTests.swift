@@ -129,6 +129,8 @@ final class CallWaveClientPropertyTests: XCTestCase {
 
         XCTAssertEqual(client.defaultCallerName, "Unknown")
 
+        // Deliberately non-ASCII: the name reaches CallKit and a host that
+        // localizes it must get its own string back unchanged.
         client.defaultCallerName = "Домофон"
         XCTAssertEqual(client.defaultCallerName, "Домофон")
 
