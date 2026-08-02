@@ -2,62 +2,59 @@ import SwiftUI
 import UIKit
 import MobileVLCKit
 
-/// UIViewRepresentable для отображения VLC плеера в SwiftUI
+/// Hosts a VLC player inside SwiftUI, so the intercom's RTSP preview can sit
+/// next to the call controls.
 struct VideoPlayerView: UIViewRepresentable {
     let url: String
     let player: VLCMediaPlayer
-    
+
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .black
-        
-        // Устанавливаем view как отображение для плеера
+
         player.drawable = view
-        
-        // Создаем медиа с URL
+
         if let url = URL(string: url) {
             let media = VLCMedia(url: url)
-            
-            // Применяем параметры RTSP с отключенным звуком
+
+            // The intercom stream is watched, not listened to: its audio is
+            // muted at every level VLC offers, because the call audio already
+            // comes from SIP and two sources at once produce an echo.
             let options = [
                 "network-caching": "3000",
                 "live-caching": "3000",
                 "rtsp-tcp": "1",
                 "rtsp-frame-buffer-size": "1000000",
                 "rtsp-timeout": "5",
-                "rtsp-host": "127.0.0.1",  // Фиксированный IP-адрес для подключения
-                "rtsp-port": "0",           // Использовать динамический порт
-                "audio-mute": "1",          // Принудительно отключаем звук
-                "no-audio": "1",            // Полностью отключаем аудио поток
-                "volume": "0",              // Устанавливаем громкость на 0
-                "gain": "0",                // Устанавливаем усиление на 0
-                "alsa-gain": "0"            // Усиление ALSA на 0
+                "rtsp-host": "127.0.0.1",   // fixed address for the connection
+                "rtsp-port": "0",           // pick the port dynamically
+                "audio-mute": "1",
+                "no-audio": "1",
+                "volume": "0",
+                "gain": "0",
+                "alsa-gain": "0"
             ]
-            
+
             for (key, value) in options {
                 media.addOption(":\(key)=\(value)")
             }
-            
-            // Принудительно отключаем звук для RTSP
+
             player.audio?.volume = 0
             player.audio?.isMuted = true
-            
-            // Устанавливаем медиа для плеера
+
             player.media = media
-            
-            // Запускаем воспроизведение
             player.play()
-            
-            print("✅ RTSP плеер инициализирован с отключенным звуком")
+
+            print("✅ RTSP player started with audio muted")
         } else {
-            print("❌ Ошибка: не удалось создать URL для видеопотока")
+            print("❌ Could not build a URL for the video stream: \(url)")
         }
-        
+
         return view
     }
-    
+
     func updateUIView(_ uiView: UIView, context: Context) {
-        // Обновление не требуется, плеер контролируется внешне
+        // Nothing to refresh: the player is driven from outside this view.
     }
 }
 
@@ -65,10 +62,10 @@ struct VideoPlayerView: UIViewRepresentable {
 struct VideoPlayerView_Previews: PreviewProvider {
     static var previews: some View {
         VStack {
-            Text("RTSP видеоплеер")
+            Text("RTSP video player")
                 .font(.headline)
-            
-            Text("VLC недоступен в превью")
+
+            Text("VLC is not available in previews")
                 .frame(height: 240)
                 .frame(maxWidth: .infinity)
                 .background(Color.gray.opacity(0.2))
@@ -77,4 +74,4 @@ struct VideoPlayerView_Previews: PreviewProvider {
         }
     }
 }
-#endif 
+#endif
