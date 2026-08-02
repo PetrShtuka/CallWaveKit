@@ -45,11 +45,20 @@ final class AppCallService: NSObject, CallWaveClientDelegate {
     }
 
     private func makeClient() -> CallWaveClient {
+        let engine = CallWaveEngineConfiguration.defaultConfiguration()
+        engine.userAgent = "SIOSP-Demo"
+        #if DEBUG
+        engine.logLevel = .info
+        #endif
+
         let client = CallWaveClient(
             configuration: nil,
             options: .managesEverything,
-            provider: nil
+            provider: nil,
+            engineConfiguration: engine
         )
+        // The library ships a neutral fallback; the product name belongs here.
+        client.defaultCallerName = "Домофон"
         client.delegate = self
         return client
     }

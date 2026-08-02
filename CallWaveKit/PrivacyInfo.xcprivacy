@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	    CallWaveKit does not collect or transmit data on its own. SIP
+	    credentials, caller identifiers and the VoIP push token are handed
+	    straight back to the host application, which decides what to do with
+	    them. Nothing is sent to a CallWave-operated endpoint, and there is no
+	    analytics or tracking code.
+
+	    The bundled PJSIP binary was checked for required-reason APIs: it uses
+	    neither mach_absolute_time, nor NSUserDefaults, nor the file-timestamp
+	    or disk-space families. Re-run that check if the XCFramework is rebuilt
+	    with different options; Scripts/build-pjsip-xcframework.sh reproduces
+	    the binary this manifest describes.
+	-->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array/>
+</dict>
+</plist>

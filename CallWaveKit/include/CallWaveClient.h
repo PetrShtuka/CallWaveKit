@@ -2,123 +2,15 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CallKit/CallKit.h>
 
+#import "CallWaveTypes.h"
+#import "CallWaveConfiguration.h"
+#import "CallWaveEngineConfiguration.h"
+#import "CallWaveCallStatistics.h"
+#import "CallWaveEvent.h"
+#import "CallWaveIncomingCallDescriptor.h"
+#import "CallWaveLogging.h"
+
 NS_ASSUME_NONNULL_BEGIN
-
-FOUNDATION_EXPORT NSErrorDomain const CallWaveErrorDomain;
-typedef void (^CallWaveCompletion)(NSError * _Nullable error);
-
-typedef NS_ERROR_ENUM(CallWaveErrorDomain, CallWaveErrorCode) {
-    CallWaveErrorInvalidConfiguration = 1,
-    CallWaveErrorEngineAlreadyRunning = 2,
-    CallWaveErrorEngineNotRunning = 3,
-    CallWaveErrorSIPFailure = 4,
-    CallWaveErrorNoActiveCall = 5,
-    CallWaveErrorCallActionFailed = 6,
-    CallWaveErrorNotConfigured = 7,
-    CallWaveErrorTimedOut = 8,
-    CallWaveErrorInvalidArgument = 9,
-    CallWaveErrorAudioSessionFailure = 10,
-};
-
-typedef NS_ENUM(NSInteger, CallWaveRegistrationState) {
-    CallWaveRegistrationStateStopped,
-    CallWaveRegistrationStateRegistering,
-    CallWaveRegistrationStateRegistered,
-    CallWaveRegistrationStateFailed,
-};
-
-typedef NS_ENUM(NSInteger, CallWaveCallState) {
-    CallWaveCallStateIdle,
-    CallWaveCallStateIncoming,
-    CallWaveCallStateConnecting,
-    CallWaveCallStateActive,
-    CallWaveCallStateEnded,
-};
-
-/// SIP signalling transport. The registrar URI carries the matching
-/// `transport=` parameter; the identity URI never carries a port or transport.
-typedef NS_ENUM(NSInteger, CallWaveTransport) {
-    CallWaveTransportUDP = 0,
-    CallWaveTransportTCP,
-    CallWaveTransportTLS,
-};
-
-/// How DTMF digits leave the device.
-typedef NS_ENUM(NSInteger, CallWaveDTMFMethod) {
-    /// RFC 2833 telephone-event in the RTP stream, falling back to SIP INFO
-    /// when the peer did not negotiate telephone-event. This is the default and
-    /// what intercom door-openers expect.
-    CallWaveDTMFMethodAuto = 0,
-    CallWaveDTMFMethodRFC2833,
-    CallWaveDTMFMethodSIPINFO,
-};
-
-/// Which of the two process-global iOS singletons the client is allowed to own.
-///
-/// A host that already runs its own `CXProvider` (branded icon, localized name)
-/// or its own `PKPushRegistry` must not let the library create a second one:
-/// two `.voIP` registries or two providers in one process desynchronise call
-/// state. Clear the corresponding option and drive the library through
-/// `-prepareIncomingCallWithUUID:caller:`, `-acceptCallWithUUID:…`,
-/// `-endCallWithUUID:completion:` and the audio-session hooks instead.
-typedef NS_OPTIONS(NSUInteger, CallWaveIntegrationOptions) {
-    CallWaveIntegrationOptionNone = 0,
-    /// The library creates a `CXProvider`, becomes its delegate and reports
-    /// incoming calls itself.
-    CallWaveIntegrationOptionManagesCallKit = 1 << 0,
-    /// The library creates a `PKPushRegistry` for `PKPushTypeVoIP`.
-    CallWaveIntegrationOptionManagesVoIPPushRegistry = 1 << 1,
-    /// What `-initWithConfiguration:` uses.
-    CallWaveIntegrationOptionManagesEverything =
-        CallWaveIntegrationOptionManagesCallKit |
-        CallWaveIntegrationOptionManagesVoIPPushRegistry,
-};
-
-/// Immutable SIP account description.
-///
-/// Hosts that receive credentials inside every VoIP push build a fresh
-/// configuration per call and hand it to `-loginWithConfiguration:completion:`;
-/// the PJSUA stack is not recreated.
-@interface CallWaveConfiguration : NSObject <NSCopying>
-
-/// Registrar host without port, e.g. `sip.example.com` or `10.0.0.5`.
-@property (nonatomic, copy, readonly) NSString *host;
-/// Registrar port. `0` means the transport default (5060, or 5061 for TLS).
-@property (nonatomic, assign, readonly) NSUInteger port;
-@property (nonatomic, assign, readonly) CallWaveTransport transport;
-@property (nonatomic, copy, readonly) NSString *username;
-@property (nonatomic, copy, readonly) NSString *password;
-@property (nonatomic, assign, readonly) BOOL includesCallsInRecents;
-
-/// `host` or `host:port`. Retained for callers written against the previous
-/// single-string API.
-@property (nonatomic, copy, readonly) NSString *domain;
-/// `sip:username@host` — no port, no transport parameter.
-@property (nonatomic, copy, readonly) NSString *identityURI;
-/// `sip:host:port` plus `;transport=` for TCP and TLS.
-@property (nonatomic, copy, readonly) NSString *registrarURI;
-
-- (instancetype)init NS_UNAVAILABLE;
-
-- (instancetype)initWithHost:(NSString *)host
-                        port:(NSUInteger)port
-                   transport:(CallWaveTransport)transport
-                    username:(NSString *)username
-                    password:(NSString *)password
-      includesCallsInRecents:(BOOL)includesCallsInRecents NS_DESIGNATED_INITIALIZER;
-
-/// Splits `host:port` and defaults to UDP.
-- (instancetype)initWithDomain:(NSString *)domain
-                      username:(NSString *)username
-                      password:(NSString *)password
-        includesCallsInRecents:(BOOL)includesCallsInRecents;
-
-/// YES when both descriptions address the same account with the same
-/// credentials, so re-registering is enough and the account need not be
-/// replaced.
-- (BOOL)isEqualToConfiguration:(nullable CallWaveConfiguration *)other;
-
-@end
 
 @class CallWaveClient;
 
@@ -144,7 +36,22 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
     NS_SWIFT_NAME(callWaveClient(_:didEndCallWithUUID:reason:));
 @end
 
-/// Instance-owned SIP/CallKit client.
+/// Instance-owned SIP/CallKit client for incoming calls.
+///
+/// ## Threading
+///
+/// Every public method may be called from any thread. Internally the client
+/// keeps two rules:
+///
+/// - all of the client's own mutable state changes on the main queue, which is
+///   also where the delegate, the event observers and CallKit are driven;
+/// - every `pjsua_*` sequence the client initiates runs on one serial queue, so
+///   a "read the call info, then act on it" pair cannot interleave with another.
+///
+/// PJSIP's own callback threads are the documented exception: they talk to
+/// PJSUA directly, because a `180 Ringing` that waits for a queue hop is a
+/// `180 Ringing` that arrives too late. PJSUA is internally locked, so this is
+/// safe; the serial queue exists to serialise CallWaveKit, not PJSUA.
 ///
 /// PJSUA has a process-global C runtime, so only one client may be running at
 /// a time. The client is nevertheless created and injected explicitly; there
@@ -154,19 +61,37 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// The account the engine is currently configured for, or `nil` before the
 /// first `-loginWithConfiguration:completion:`.
 @property (nonatomic, strong, readonly, nullable) CallWaveConfiguration *configuration;
+/// The runtime settings this client was created with. Immutable once the
+/// engine has started.
+@property (nonatomic, copy, readonly) CallWaveEngineConfiguration *engineConfiguration;
 @property (nonatomic, assign, readonly) CallWaveIntegrationOptions integrationOptions;
 /// The provider the library reports through. Library-owned in
 /// `CallWaveIntegrationOptionManagesCallKit`, otherwise whatever the host
 /// injected (possibly `nil`).
 @property (nonatomic, strong, readonly, nullable) CXProvider *provider;
 @property (nonatomic, weak, nullable) id<CallWaveClientDelegate> delegate;
+/// Convenience for `CallWaveLog.logger`, which is process-wide.
+@property (nonatomic, weak, nullable) id<CallWaveLogger> logger;
+
 @property (nonatomic, assign, readonly, getter=isRunning) BOOL running;
 @property (nonatomic, assign, readonly, getter=isRegistered) BOOL registered;
-@property (nonatomic, assign, readonly, getter=isMicrophoneMuted) BOOL microphoneMuted;
 @property (nonatomic, assign, readonly) CallWaveRegistrationState registrationState;
+/// Why the last registration attempt failed, with
+/// `CallWaveErrorSIPStatusCodeKey` in `userInfo`. `nil` while registered.
+@property (nonatomic, strong, readonly, nullable) NSError *registrationError;
+
+/// State of the most recent call, for hosts that only ever have one.
 @property (nonatomic, assign, readonly) CallWaveCallState callState;
 @property (nonatomic, strong, nullable, readonly) NSUUID *currentCallUUID;
 @property (nonatomic, copy, nullable, readonly) NSString *currentCaller;
+/// Microphone state of the most recent call.
+@property (nonatomic, assign, readonly, getter=isMicrophoneMuted) BOOL microphoneMuted;
+/// Every call the client is tracking, oldest first.
+@property (nonatomic, copy, readonly) NSArray<NSUUID *> *activeCallUUIDs;
+
+/// Shown when a push or an INVITE carries no usable caller. Defaults to
+/// `"Unknown"`; a host that wants a localized name sets its own.
+@property (nonatomic, copy) NSString *defaultCallerName;
 
 /// How long the client waits for the INVITE of a call that CallKit has already
 /// answered. Defaults to 10 seconds. The CallKit action itself is fulfilled
@@ -186,21 +111,46 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// is not part of `answerTimeout`.
 @property (nonatomic, assign) NSTimeInterval acceptDelay;
 
+/// How long an unanswered incoming call is allowed to ring before the client
+/// replies `480 Temporarily Unavailable` and reports it as unanswered.
+/// Defaults to 60 seconds; `0` disables the timeout and leaves the call
+/// ringing for as long as the PBX keeps it alive.
+@property (nonatomic, assign) NSTimeInterval incomingCallTimeout;
+
+/// Hard deadline for the PushKit completion handler passed to
+/// `-handleVoIPPushPayload:completion:`. If CallKit has not called back by
+/// then the handler runs anyway, because not running it at all terminates the
+/// process with `0xBAADCA11`. Defaults to 4 seconds.
+@property (nonatomic, assign) NSTimeInterval pushCompletionTimeout;
+
 /// DTMF method used by `-sendDTMF:completion:`. Defaults to
 /// `CallWaveDTMFMethodAuto`.
 @property (nonatomic, assign) CallWaveDTMFMethod dtmfMethod;
 
+/// Replaces the built-in parsing of `data.uuid` and `data.callerID` in
+/// `-handleVoIPPushPayload:completion:`.
+@property (nonatomic, copy, nullable) CallWavePushPayloadParser pushPayloadParser;
+
 - (instancetype)init NS_UNAVAILABLE;
 
-/// Library-owned CallKit and PushKit.
+/// Library-owned CallKit and PushKit, default engine settings.
 - (instancetype)initWithConfiguration:(CallWaveConfiguration *)configuration;
 
-/// Full control. Pass `CallWaveIntegrationOptionNone` and the host's own
-/// `CXProvider` for a host that already owns CallKit and PushKit; pass a `nil`
-/// configuration when credentials only arrive with the first push.
+/// Full control over the two iOS singletons. Pass
+/// `CallWaveIntegrationOptionNone` and the host's own `CXProvider` for a host
+/// that already owns CallKit and PushKit; pass a `nil` configuration when
+/// credentials only arrive with the first push.
 - (instancetype)initWithConfiguration:(nullable CallWaveConfiguration *)configuration
                               options:(CallWaveIntegrationOptions)options
-                             provider:(nullable CXProvider *)provider NS_DESIGNATED_INITIALIZER;
+                             provider:(nullable CXProvider *)provider;
+
+/// Full control, including the PJSUA runtime settings. `nil` engine
+/// configuration means `+[CallWaveEngineConfiguration defaultConfiguration]`.
+- (instancetype)initWithConfiguration:(nullable CallWaveConfiguration *)configuration
+                              options:(CallWaveIntegrationOptions)options
+                             provider:(nullable CXProvider *)provider
+                  engineConfiguration:(nullable CallWaveEngineConfiguration *)engineConfiguration
+    NS_DESIGNATED_INITIALIZER;
 
 #pragma mark - Engine and account lifecycle
 
@@ -235,13 +185,22 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// `-unregisterWithError:` or `-logoutWithError:` between calls.
 - (void)stop;
 
-#pragma mark - Call control
+/// Rebuilds transports and re-registers after a network change. The client
+/// does this on its own unless `handlesNetworkChanges` was turned off.
+- (void)handleNetworkChange;
+
+#pragma mark - Call control through CallKit
 
 - (void)answerWithCompletion:(nullable CallWaveCompletion)completion;
 - (void)declineWithCompletion:(nullable CallWaveCompletion)completion;
 - (void)hangupWithCompletion:(nullable CallWaveCompletion)completion;
 - (void)setMuted:(BOOL)muted completion:(nullable CallWaveCompletion)completion;
+/// Requests a `CXSetHeldCallAction`. Only available when
+/// `engineConfiguration.maximumCalls` is greater than 1.
+- (void)setHeld:(BOOL)held completion:(nullable CallWaveCompletion)completion;
 - (BOOL)setSpeakerEnabled:(BOOL)enabled error:(NSError * _Nullable * _Nullable)error;
+
+#pragma mark - Direct call control
 
 /// Answers the SIP call directly, without going through `CXCallController`.
 /// If the INVITE has not arrived yet the client polls until `answerTimeout`
@@ -268,6 +227,37 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 
 /// Applies an RTP-level microphone mute without a CallKit transaction.
 - (BOOL)setMicrophoneMuted:(BOOL)muted error:(NSError * _Nullable * _Nullable)error;
+- (void)setMicrophoneMuted:(BOOL)muted
+           forCallWithUUID:(nullable NSUUID *)uuid
+                completion:(nullable CallWaveCompletion)completion
+    NS_SWIFT_NAME(setMicrophoneMuted(_:forCallWithUUID:completion:));
+
+/// Puts a SIP call on hold with a re-INVITE, without a CallKit transaction.
+- (void)setHeld:(BOOL)held
+forCallWithUUID:(nullable NSUUID *)uuid
+     completion:(nullable CallWaveCompletion)completion
+    NS_SWIFT_NAME(setHeld(_:forCallWithUUID:completion:));
+
+#pragma mark - Call information
+
+- (CallWaveCallState)stateForCallWithUUID:(NSUUID *)uuid
+    NS_SWIFT_NAME(state(forCallWithUUID:));
+- (nullable NSString *)callerForCallWithUUID:(NSUUID *)uuid
+    NS_SWIFT_NAME(caller(forCallWithUUID:));
+/// RTP/RTCP counters for the call's audio stream, or `nil` when there is no
+/// media yet. Pass `nil` for the current call.
+- (nullable CallWaveCallStatistics *)statisticsForCallWithUUID:(nullable NSUUID *)uuid
+    NS_SWIFT_NAME(statistics(forCallWithUUID:));
+
+/// The lock-screen name CallWaveKit would derive from a raw SIP `From` value:
+/// the quoted display name, else the user part, else the value itself.
++ (NSString *)displayNameForCaller:(nullable NSString *)caller
+    NS_SWIFT_NAME(displayName(forCaller:));
+
+/// `digits` with everything that is not `0-9`, `A-D`, `*` or `#` removed, and
+/// the remainder upper-cased. An empty result means nothing was sendable.
++ (NSString *)normalizedDTMFDigits:(nullable NSString *)digits
+    NS_SWIFT_NAME(normalizedDTMFDigits(_:));
 
 #pragma mark - DTMF
 
@@ -277,6 +267,11 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 - (void)sendDTMF:(NSString *)digits
           method:(CallWaveDTMFMethod)method
       completion:(nullable CallWaveCompletion)completion;
+- (void)sendDTMF:(NSString *)digits
+          method:(CallWaveDTMFMethod)method
+ forCallWithUUID:(nullable NSUUID *)uuid
+      completion:(nullable CallWaveCompletion)completion
+    NS_SWIFT_NAME(sendDTMF(_:method:forCallWithUUID:completion:));
 
 #pragma mark - Audio session
 
@@ -317,14 +312,25 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// No-op unless `CallWaveIntegrationOptionManagesVoIPPushRegistry` is set.
 - (void)registerForVoIPPushes;
 
-/// Parses `payload` (`data.uuid` / `data.callerID`), reports the call and calls
-/// `completion` only once CallKit has accepted the report. Failing to sequence
-/// these is what produces the `0xBAADCA11` termination and the VoIP push ban.
+/// Parses `payload` with `pushPayloadParser`, or with the built-in
+/// `data.uuid` / `data.callerID` reader, reports the call and calls
+/// `completion` once CallKit has accepted the report — or after
+/// `pushCompletionTimeout`, whichever comes first. Failing to run the handler
+/// is what produces the `0xBAADCA11` termination and the VoIP push ban.
 - (void)handleVoIPPushPayload:(NSDictionary *)payload
                    completion:(nullable void (^)(void))completion;
 
 - (void)handleVoIPPushPayload:(NSDictionary *)payload
     __attribute__((deprecated("Use -handleVoIPPushPayload:completion: and pass the PushKit completion handler.")));
+
+#pragma mark - Events
+
+/// Registers `handler` for every `CallWaveEvent`, on the main queue. The
+/// returned token must be kept and passed to `-removeEventObserver:`;
+/// the client holds `handler` until then.
+- (id<NSCopying, NSObject>)addEventObserver:(void (^)(CallWaveEvent *event))handler
+    NS_SWIFT_NAME(addEventObserver(_:));
+- (void)removeEventObserver:(id<NSCopying, NSObject>)token;
 
 @end
 

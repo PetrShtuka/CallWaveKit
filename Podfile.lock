@@ -1,5 +1,5 @@
 PODS:
-  - CallWaveKit (0.1.0)
+  - CallWaveKit (0.2.0)
   - MobileVLCKit (3.3.16.3)
 
 DEPENDENCIES:
@@ -15,7 +15,7 @@ EXTERNAL SOURCES:
     :path: "."
 
 SPEC CHECKSUMS:
-  CallWaveKit: 2ce0218c5e89659ababd88c1ab216c1dda13db34
+  CallWaveKit: 2d4f5ebe4c988463ad020249a72c8ed35fbc88aa
   MobileVLCKit: 2b408a9c5cc327353afab418fafbc942780b248a
 
 PODFILE CHECKSUM: bce80c461857b36658747764ac091bfad3ae192c

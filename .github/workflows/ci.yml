@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests (iOS Simulator)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: xcodebuild -version
+      - name: Run package tests
+        run: ./Scripts/run-package-tests.sh
+
+  build-device:
+    name: Build for device
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build arm64 device slice
+        run: ACTION=build DESTINATION='generic/platform=iOS' ./Scripts/run-package-tests.sh
+
+  lint-podspec:
+    name: Lint podspec
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # The bundled PJSIP binary is built for iOS 16 while the pod declares 15,
+      # which is a documented linker warning rather than a defect.
+      - name: pod lib lint
+        run: pod lib lint CallWaveKit.podspec --allow-warnings --skip-tests --platforms=ios
+
+  build-demo:
+    name: Build the demo application
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: pod install
+        run: pod install --repo-update
+      - name: Build SIOSP
+        run: |
+          xcodebuild build \
+            -workspace SIOSP.xcworkspace \
+            -scheme SIOSP \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO

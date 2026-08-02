@@ -215,6 +215,7 @@
 				4DF558E521F372F6004C4428 /* Resources */,
 				D0C1E60E2DAB7DC800B02743 /* Embed Frameworks */,
 				C16710502C37CC5F78B40890 /* [CP] Embed Pods Frameworks */,
+				EF8DDE9A6859C8F84523EEC4 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -367,6 +368,23 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-SIOSP/Pods-SIOSP-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		EF8DDE9A6859C8F84523EEC4 /* [CP] Copy Pods Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-SIOSP/Pods-SIOSP-resources-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Copy Pods Resources";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-SIOSP/Pods-SIOSP-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-SIOSP/Pods-SIOSP-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */

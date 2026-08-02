@@ -8,9 +8,12 @@ let package = Package(
         .iOS(.v15)
     ],
     products: [
+        // Depending on this product gives both modules: `CallWaveKit` for the
+        // Objective-C API and `CallWaveKitAsync` for the Swift concurrency
+        // conveniences layered on top of it.
         .library(
             name: "CallWaveKit",
-            targets: ["CallWaveKit"]
+            targets: ["CallWaveKit", "CallWaveKitAsync"]
         )
     ],
     targets: [
@@ -23,7 +26,10 @@ let package = Package(
             dependencies: ["PJSIP"],
             path: "CallWaveKit",
             exclude: ["README.md"],
-            publicHeadersPath: ".",
+            resources: [
+                .copy("PrivacyInfo.xcprivacy")
+            ],
+            publicHeadersPath: "include",
             cSettings: [
                 .define("PJ_AUTOCONF", to: "1")
             ],
@@ -34,11 +40,22 @@ let package = Package(
                 .linkedFramework("CFNetwork"),
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("CoreFoundation"),
+                .linkedFramework("Network"),
                 .linkedFramework("PushKit"),
                 .linkedFramework("UIKit"),
                 .linkedLibrary("m"),
                 .linkedLibrary("pthread")
             ]
+        ),
+        .target(
+            name: "CallWaveKitAsync",
+            dependencies: ["CallWaveKit"],
+            path: "CallWaveKitAsync"
+        ),
+        .testTarget(
+            name: "CallWaveKitTests",
+            dependencies: ["CallWaveKit", "CallWaveKitAsync"],
+            path: "Tests/CallWaveKitTests"
         )
     ]
 )
