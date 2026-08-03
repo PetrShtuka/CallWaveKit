@@ -31,8 +31,13 @@ CallWaveLog.redactsIdentifiers = false   // never in a build you ship
 log stream --predicate 'subsystem == "com.callwave.kit"' --info --debug
 ```
 
-  Categories are `sip`, `call`, `audio`, `push`, `network` and `pjsip`, and
-  they are lower-case — `--predicate 'category == "call"'` to narrow further.
+  Categories are `sip`, `call`, `audio`, `push`, `network` and `pjsip`, all
+  lower-case. Narrow with `--predicate 'subsystem == "com.callwave.kit" AND
+  category == "call"'`.
+
+Markers below are written as `[category] message`, matching what `log stream`
+prints for the subsystem and category. Only the message text is emitted by the
+library; the bracket is shorthand for the category column.
 
 Record the log for every scenario. A failure with no log is a failure that has
 to be reproduced from scratch.
@@ -51,12 +56,12 @@ Force-quit the app, lock the phone, place the call, answer from the lock screen.
 - CallKit shows the branded name and icon.
 - Two-way audio within a second of answering — **check both directions**, the
   common failure is one-way.
-- `[Call] INVITE for call … observed after N ms, settle delay 500 ms`, then
-  `[Call] answering call … after a 500 ms settle delay`, then
-  `[Call] 200 OK sent for call 0`.
+- `[call] INVITE for call … observed after N ms, settle delay 500 ms`, then
+  `[call] answering call … after a 500 ms settle delay`, then
+  `[call] 200 OK sent for call 0`.
 - Note the `N`. If it creeps toward `answerTimeout`, the PBX or the push path
   got slower and the timeout needs revisiting.
-- `[Audio] CallKit did not activate the session, activating manually` is a
+- `[audio] CallKit did not activate the session, activating manually` is a
   warning, not a failure — but if it appears on every call, CallKit is not
   activating the session at all and that deserves an investigation of its own.
 
@@ -74,8 +79,9 @@ Answer, then send the DTMF code.
   DTMF completion is the contract; ending the call earlier truncates the RTP
   telephone-events and the door stays shut.
 - If the PBX does not negotiate `telephone-event`, the log shows the RFC 2833
-  attempt failing and the SIP INFO fallback being used. Both are acceptable;
-  silently no door is not.
+  attempt failing and the SIP INFO fallback being used:
+  `[call] RFC 2833 DTMF failed (…), retrying with SIP INFO`. Both are
+  acceptable; silently no door is not.
 
 ### 4. Declining
 
@@ -106,7 +112,7 @@ Answer, then hang up on the intercom side.
 
 Let the phone ring past `incomingCallTimeout` (60 s by default).
 
-- The call is rejected with `480`, `[Call] call … rang for 60s without an answer`
+- The call is rejected with `480`, `[call] call … rang for 60s without an answer`
   appears, and CallKit clears.
 - The next call still arrives — the timeout must not leave the account in a bad
   state.
@@ -122,27 +128,48 @@ between them.
 - If the host receives credentials in the push, use an account whose credentials
   actually change between calls, so the account swap is exercised rather than
   the "identical configuration, just re-register" shortcut.
-- Watch for `[SIP] registration started for … via …` per call and a `200` in
-  `[SIP] registration 200 …`.
+- Watch for `[sip] registration started for … via …` per call and a `200` in
+  `[sip] registration 200 …`.
 
-### 8. Two calls at once
+### 8. Unregistering between calls
+
+A host that releases the account between calls does it through `unregister()`,
+and the state that follows has to be believable: a client that claims to be
+registered when it is not makes the host skip the re-registration, and the next
+call simply never arrives.
+
+After a finished call, call `unregister()` and read the state back.
+
+- `registrationState` is `.stopped` and `isRegistered` is `false`. Reporting
+  `.registered` here is the 0.3.0 bug — PJSIP leaves `expires` at
+  `PJSIP_EXPIRES_NOT_SPECIFIED` rather than at zero, with the status still 200.
+- `unregister()` a second time still succeeds instead of reporting an error.
+- `refreshRegistration()` or `login(configuration:)` brings it back, and the
+  next call arrives.
+
+### 9. Two calls at once
 
 With `maximumCalls == 1` (the default), have a second intercom call while the
 first is up: the second must be rejected `486 Busy Here` and the first must
 survive untouched.
 
 With `maximumCalls > 1`, the second call is reported to CallKit, hold works, and
-audio follows the active call.
+audio follows the active call. With both calls up, end **one** of them: the
+other must survive with its audio intact. Ending the wrong one is the 0.3.0 bug,
+where a disconnect was resolved through `currentCallUUID` instead of the call id
+PJSIP actually reported.
 
-### 9. Network handover mid-call
+### 10. Network handover mid-call
 
 Answer, then switch Wi-Fi off during the conversation.
 
 - Audio recovers, or the call ends cleanly. What must not happen is a call that
   looks alive with no audio in either direction.
-- `pjsua_handle_ip_change()` runs — visible in the PJSIP trace at `.debug`.
+- `[network] network path changed (0x… -> 0x…), rebuilding transports` — this
+  is the line that proves `pjsua_handle_ip_change()` ran. A failure logs
+  `[network] IP change handling failed (…)`.
 
-### 10. Push survival
+### 11. Push survival
 
 Twenty calls over a session, some answered, some declined, some ignored.
 
@@ -151,9 +178,9 @@ Twenty calls over a session, some answered, some declined, some ignored.
   application that fails to run the PushKit completion handler, and the
   punishment is delayed — which is exactly why this needs twenty calls and not
   two.
-- `[Push] acknowledging VoIP push (…)` appears once per push.
+- `[push] acknowledging VoIP push (…)` appears once per push.
 
-### 11. Audio details
+### 12. Audio details
 
 During an answered call:
 
@@ -164,7 +191,7 @@ During an answered call:
 - `statistics(forCallWithUUID:)` reports a sane codec, non-zero packet counts
   and plausible loss and jitter.
 
-### 12. TLS, if the deployment uses it
+### 13. TLS, if the deployment uses it
 
 Certificate verification is on by default since 0.3.0. Register against the
 intercom over TLS and confirm it succeeds; if the intercom carries a self-signed
