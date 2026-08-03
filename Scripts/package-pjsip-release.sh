@@ -6,8 +6,8 @@
 # checkout pays for it, so a tagged release should attach the zip instead and
 # Package.swift should point at that URL:
 #
-#   ./Scripts/package-pjsip-release.sh 0.3.0
-#   gh release upload 0.3.0 build/PJSIP.xcframework.zip
+#   ./Scripts/package-pjsip-release.sh 0.4.0
+#   gh release upload 0.4.0 build/PJSIP.xcframework.zip
 #
 # Then replace the `path:` binary target in Package.swift with the printed
 # `url:`/`checksum:` pair. Keep the local `path:` variant on a branch you

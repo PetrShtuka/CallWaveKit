@@ -117,9 +117,9 @@ Let the phone ring past `incomingCallTimeout` (60 s by default).
 - The next call still arrives — the timeout must not leave the account in a bad
   state.
 
-### 7. Several calls in a row
+### 7. Ten calls in a row
 
-Place five calls, answering some and declining others, with the app left running
+Place ten calls, answering some and declining others, with the app left running
 between them.
 
 - Every call arrives. A call that does not arrive after a successful earlier one
@@ -198,6 +198,36 @@ intercom over TLS and confirm it succeeds; if the intercom carries a self-signed
 certificate, confirm that the host's explicit opt-out is what makes it work, and
 that removing the opt-out fails the registration rather than silently accepting
 the certificate.
+
+### 14. Remote cancellation
+
+Send an incoming-call push, then send a cancellation push with the same UUID
+before the INVITE arrives. Repeat after the INVITE reaches the device.
+
+- CallKit clears once and no second incoming screen appears.
+- A late INVITE receives `603`.
+- The next normal call arrives and answers.
+
+### 15. Audio interruption and route loss
+
+Answer with a Bluetooth headset, interrupt the app with a normal phone call,
+then return. Disconnect Bluetooth during a second call and reconnect it.
+
+- CallWaveKit emits interruption and route-change events.
+- Audio resumes after the phone call when iOS supplies `shouldResume`.
+- The session falls back to an available route after Bluetooth disappears.
+- A selected speaker route returns after reactivation when iOS still exposes
+  the speaker.
+
+### 16. IPv6, NAT64 and TURN
+
+Register on an IPv6-only/NAT64 network with `.automatic`, then force media
+through each supported TURN transport. Repeat an old IPv4 intercom with
+`.ipv4Only`.
+
+- REGISTER and the incoming call complete on IPv6-only service.
+- RTP counters increase through TURN UDP, TCP and TLS.
+- Logs and `diagnosticsSnapshot()` contain no TURN username or password.
 
 ## Reporting a field failure
 

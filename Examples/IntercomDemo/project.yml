@@ -1,0 +1,32 @@
+name: IntercomDemo
+options:
+  deploymentTarget:
+    iOS: "15.0"
+packages:
+  CallWaveKit:
+    path: ../..
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    PRODUCT_BUNDLE_IDENTIFIER: com.example.IntercomDemo
+    DEVELOPMENT_TEAM: ""
+  configs:
+    Debug:
+      baseConfiguration: Config/Secrets.xcconfig
+    Release:
+      baseConfiguration: Config/Secrets.xcconfig
+targets:
+  IntercomDemo:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Supporting/Info.plist
+    entitlements:
+      path: Supporting/IntercomDemo.entitlements
+    dependencies:
+      - package: CallWaveKit
+        product: CallWaveKit
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Supporting/IntercomDemo.entitlements

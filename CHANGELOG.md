@@ -4,6 +4,40 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [0.4.0] - Unreleased
+
+### Added
+
+- TURN over UDP, TCP or TLS through `CallWaveTURNConfiguration`.
+- Dual-stack SIP and media with `automatic`, `ipv4Only` and `ipv6Only`
+  policies. `automatic` supports IPv6-only and NAT64 networks.
+- Audio route snapshots plus route-change and interruption events. The client
+  restores the selected speaker route after audio-session reactivation when
+  iOS still exposes that route.
+- Remote cancellation for a call announced by PushKit. A late matching INVITE
+  receives `603` and cannot create a second CallKit call.
+- VoIP push-token invalidation callback and event.
+- Credential-free diagnostics with registration, network path, audio route and
+  RTP statistics. Hosts can request periodic raw statistics events.
+- Async remote-cancellation API, DocC, an intercom demo and a Linphone migration
+  guide.
+- A thread-safe PushKit completion gate with a concurrent once-only test.
+
+### Fixed
+
+- PJSIP 2.17 now compiles with `PJ_SSL_SOCK_IMP_APPLE`, backed by
+  `Network.framework`. The previous binary used `--disable-ssl` while the API
+  exposed TLS.
+- CI checks TLS symbols, XCFramework slices and the iOS 15 deployment floor.
+  CocoaPods lint now fails on warnings.
+
+### Release gate
+
+Do not tag 0.4.0 until the Major-ios device checklist in `FIELD-TESTING.md`
+passes. SwiftPM must keep the local binary target until the GitHub release
+asset exists; the release maintainer then uploads the zip and changes the
+target to its URL and checksum in the same release commit.
+
 ## [0.3.1] — 2026-08-02
 
 ### Fixed

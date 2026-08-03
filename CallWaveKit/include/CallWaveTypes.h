@@ -57,6 +57,17 @@ typedef NS_ENUM(NSInteger, CallWaveTransport) {
     CallWaveTransportTLS,
 };
 
+/// Address-family policy for SIP signalling and RTP media.
+typedef NS_ENUM(NSInteger, CallWaveIPVersionPolicy) {
+    /// Prefer the address family available on the current network and allow
+    /// both IPv4 and IPv6. This is the default and supports IPv6-only/NAT64.
+    CallWaveIPVersionPolicyAutomatic = 0,
+    /// Compatibility mode for older intercom PBXs that only listen on IPv4.
+    CallWaveIPVersionPolicyIPv4Only,
+    /// Require IPv6 signalling and media.
+    CallWaveIPVersionPolicyIPv6Only,
+};
+
 /// How DTMF digits leave the device.
 typedef NS_ENUM(NSInteger, CallWaveDTMFMethod) {
     /// RFC 2833 telephone-event in the RTP stream, falling back to SIP INFO

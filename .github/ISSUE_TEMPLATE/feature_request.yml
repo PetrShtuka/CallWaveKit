@@ -1,0 +1,16 @@
+name: Feature request
+description: Propose an intercom calling use case
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Intercom use case
+    validations:
+      required: true
+  - type: textarea
+    id: protocol
+    attributes:
+      label: SIP or iOS requirement
+      description: Include PBX/intercom model and protocol details when relevant.

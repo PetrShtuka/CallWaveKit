@@ -67,14 +67,14 @@ CocoaPods fail with a version mismatch, because `spec.source` resolves
 
 ```sh
 git checkout main && git pull
-git tag -a 0.3.0 -m "CallWaveKit 0.3.0"
-git push origin 0.3.0
+git tag -a 0.4.0 -m "CallWaveKit 0.4.0"
+git push origin 0.4.0
 ```
 
 Verify the tag and the podspec agree before going further:
 
 ```sh
-git show 0.3.0^{commit}:CallWaveKit.podspec | grep spec.version
+git show 0.4.0^{commit}:CallWaveKit.podspec | grep spec.version
 ```
 
 ### 4. Validate against the published tag
@@ -83,18 +83,16 @@ This is what trunk will run, and it downloads the source from GitHub rather
 than from the working directory:
 
 ```sh
-pod spec lint CallWaveKit.podspec --allow-warnings --skip-tests --platforms=ios
+pod spec lint CallWaveKit.podspec --skip-tests --platforms=ios
 ```
 
-`--allow-warnings` is kept as a safety net rather than to paper over a known
-warning: since 0.3.1 the lint passes clean, because the PJSIP binary's `minos`
-matches the platform the pod declares. Drop the flag if you would rather a new
-warning fail the release.
+Treat a warning as a packaging failure. The PJSIP binary's `minos` must match
+the platform declared by the podspec.
 
 ### 5. Publish to CocoaPods
 
 ```sh
-pod trunk push CallWaveKit.podspec --allow-warnings --skip-tests
+pod trunk push CallWaveKit.podspec --skip-tests
 ```
 
 Nothing needs to happen for Swift Package Manager — the tag from step 3 is the
@@ -116,7 +114,7 @@ needs.
 it. To attach it to a release instead:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.3.0
+./Scripts/package-pjsip-release.sh 0.4.0
 ```
 
 The script prints the archive's checksum and the matching

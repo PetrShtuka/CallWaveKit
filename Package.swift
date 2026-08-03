@@ -42,6 +42,7 @@ let package = Package(
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("Network"),
                 .linkedFramework("PushKit"),
+                .linkedFramework("Security"),
                 .linkedFramework("UIKit"),
                 .linkedLibrary("m"),
                 .linkedLibrary("pthread")

@@ -40,6 +40,24 @@ private final class EventObservation: @unchecked Sendable {
 
 public extension CallWaveClient {
 
+    /// Dismisses an incoming call that the server cancelled before or while
+    /// its INVITE was being matched to the VoIP push.
+    func handleCancelledIncomingCall(
+        uuid: UUID,
+        reason: CXCallEndedReason
+    ) async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            handleCancelledIncomingCall(uuid: uuid, reason: reason) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     /// Every `CallWaveEvent` the client publishes, as an async sequence.
     ///
     /// The observer is registered when the stream is created and removed when

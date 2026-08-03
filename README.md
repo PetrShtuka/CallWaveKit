@@ -5,9 +5,9 @@
 [![CocoaPods](https://img.shields.io/badge/CocoaPods-compatible-brightgreen.svg)](https://cocoapods.org)
 [![Platform](https://img.shields.io/badge/platform-iOS%2015%2B-lightgrey.svg)](#requirements)
 
-Incoming SIP calls on iOS. CallWaveKit owns a PJSIP runtime, the SIP
-registration, CallKit, PushKit and the audio session, and gives the application
-one object to inject and drive.
+**Incoming SIP SDK for iOS intercoms.** CallWaveKit owns a PJSIP runtime, SIP
+registration, CallKit, PushKit and the audio session. The host injects and
+drives one client instance.
 
 It was built for door intercoms — a call arrives by VoIP push, the user answers
 from the lock screen, talks, and sends a DTMF digit to open the door — and it is
@@ -36,13 +36,13 @@ however it is installed.
 ### Swift Package Manager
 
 In Xcode: **File → Add Package Dependencies**, enter
-`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.3.0` or later,
+`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.4.0` or later,
 and add the `CallWaveKit` product to your application target.
 
 Or in a `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.3.0")
+.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.4.0")
 ```
 
 The product vends two modules: `CallWaveKit` (the Objective-C API) and
@@ -53,7 +53,7 @@ The product vends two modules: `CallWaveKit` (the Objective-C API) and
 ### CocoaPods
 
 ```ruby
-pod 'CallWaveKit', '~> 0.3'
+pod 'CallWaveKit', '~> 0.4'
 ```
 
 Both modules land in a single `CallWaveKit` module under CocoaPods, so
@@ -63,7 +63,7 @@ To track the repository directly instead of the published pod — an unreleased
 fix, say — point at the tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.3.1'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.4.0'
 ```
 
 ## Host application settings
@@ -125,6 +125,11 @@ hooks, logging, the Swift concurrency layer and the threading contract.
 device against a real intercom — the unit tests cover none of the answer path,
 the push path or the audio session.
 
+[IntercomDemo](Examples/IntercomDemo) shows host-owned CallKit and PushKit.
+[COMPATIBILITY.md](COMPATIBILITY.md) lists protocols and toolchains, and
+[MIGRATING-FROM-LINPHONE.md](MIGRATING-FROM-LINPHONE.md) maps a Majordom-style
+Linphone integration to CallWaveKit.
+
 ## What it does
 
 - incoming SIP calls — one by default, call waiting and CallKit hold when the
@@ -135,8 +140,10 @@ the push path or the audio session.
 - DTMF over RFC 2833 with a SIP INFO fallback, which is how intercom doors
   open;
 - UDP, TCP and TLS, with certificate verification on by default; optional SRTP,
-  outbound proxy, separate digest user, custom REGISTER headers, STUN/ICE and
-  codec priorities;
+  outbound proxy, separate digest user, custom REGISTER headers, STUN/ICE,
+  TURN over UDP/TCP/TLS and codec priorities;
+- IPv4, IPv6 and NAT64 connectivity, with an IPv4-only compatibility mode for
+  old intercoms;
 - a configurable settle delay before `200 OK`, for PBXs that are not ready to
   be answered the moment they send the INVITE, and a ring timeout that rejects
   an unanswered call with `480`;
@@ -146,7 +153,9 @@ the push path or the audio session.
   deadline, so the handler always runs and the process is never killed with
   `0xBAADCA11`;
 - recovery from Wi-Fi/cellular handovers through `pjsua_handle_ip_change()`;
+- audio interruption, media-service reset and wired/Bluetooth route handling;
 - per-call RTP/RTCP statistics: packet loss, jitter, round-trip time, codec;
+- credential-free diagnostic snapshots for support attachments;
 - `os_log` logging with identifier redaction on by default, a sink for the
   host's own stack, and no PJSIP protocol trace in release builds;
 - a Swift concurrency layer: an `AsyncStream` of events and `async throws` call
@@ -205,7 +214,7 @@ The XCFramework is 21 MB and every clone pays for it. For a tagged release,
 attach the zip instead and point the binary target at its URL:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.3.1
+./Scripts/package-pjsip-release.sh 0.4.0
 ```
 
 The script prints the archive's checksum and the `.binaryTarget(url:checksum:)`

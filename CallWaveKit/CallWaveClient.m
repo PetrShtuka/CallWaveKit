@@ -5,6 +5,10 @@
 #import "CallWaveError.h"
 #import "CallWaveEventInternal.h"
 #import "CallWaveLogInternal.h"
+#import "CallWaveAudioRouteInternal.h"
+#import "CallWaveDiagnosticsSnapshotInternal.h"
+#import "CallWaveTURNConfiguration.h"
+#import "CallWavePushCompletionGate.h"
 
 #import <AudioToolbox/AudioToolbox.h>
 #import <CallKit/CallKit.h>
@@ -124,6 +128,26 @@ static pjsip_transport_type_e pjTransportForCallWaveTransport(CallWaveTransport 
     return PJSIP_TRANSPORT_UDP;
 }
 
+static pjsip_transport_type_e pjIPv6TransportForCallWaveTransport(CallWaveTransport transport) {
+    switch (transport) {
+        case CallWaveTransportTCP:
+            return PJSIP_TRANSPORT_TCP6;
+        case CallWaveTransportTLS:
+            return PJSIP_TRANSPORT_TLS6;
+        case CallWaveTransportUDP:
+            break;
+    }
+    return PJSIP_TRANSPORT_UDP6;
+}
+
+static pj_turn_tp_type pjTURNTransportForCallWaveTransport(CallWaveTransport transport) {
+    switch (transport) {
+        case CallWaveTransportTCP: return PJ_TURN_TP_TCP;
+        case CallWaveTransportTLS: return PJ_TURN_TP_TLS;
+        case CallWaveTransportUDP: return PJ_TURN_TP_UDP;
+    }
+}
+
 static pjmedia_srtp_use pjSRTPForMediaEncryption(CallWaveMediaEncryption encryption) {
     switch (encryption) {
         case CallWaveMediaEncryptionOptional:
@@ -192,11 +216,16 @@ static void dispatchMain(dispatch_block_t block) {
 @property (nonatomic, strong) CallWaveCallRegistry *registry;
 @property (nonatomic, strong, nullable) PKPushRegistry *pushRegistry;
 @property (nonatomic, assign) BOOL audioSessionActive;
+@property (nonatomic, assign) BOOL desiredSpeakerEnabled;
+@property (nonatomic, strong, readwrite) CallWaveAudioRoute *currentAudioRoute;
 @property (nonatomic, strong) dispatch_queue_t sipQueue;
 @property (nonatomic, strong) NSMutableDictionary<NSUUID *, id> *eventObservers;
 @property (nonatomic, strong, nullable) nw_path_monitor_t pathMonitor;
 @property (nonatomic, assign) NSUInteger lastPathSignature;
 @property (nonatomic, assign) BOOL hasObservedPath;
+@property (nonatomic, copy) NSString *networkPathSummary;
+@property (nonatomic, assign) NSInteger lastRegistrationSIPStatusCode;
+@property (nonatomic, assign) BOOL statisticsSamplingScheduled;
 
 // Visible to the PJSUA C callbacks at the bottom of this file, which sit
 // outside the @implementation and therefore need a declared interface.
@@ -255,6 +284,8 @@ static void dispatchMain(dispatch_block_t block) {
         _incomingCallTimeout = CallWaveDefaultIncomingCallTimeout;
         _pushCompletionTimeout = CallWaveDefaultPushCompletionTimeout;
         _dtmfMethod = CallWaveDTMFMethodAuto;
+        _networkPathSummary = @"unknown";
+        _currentAudioRoute = [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
         _sipQueue = dispatch_queue_create("com.callwave.pjsip", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(_sipQueue, kCallWaveSIPQueueKey, kCallWaveSIPQueueKey, NULL);
         _callController = [[CXCallController alloc] init];
@@ -270,6 +301,7 @@ static void dispatchMain(dispatch_block_t block) {
                                                selector:@selector(applicationDidBecomeActive:)
                                                    name:UIApplicationDidBecomeActiveNotification
                                                  object:nil];
+        [self observeAudioSessionNotifications];
     }
     return self;
 }
@@ -365,6 +397,25 @@ static void dispatchMain(dispatch_block_t block) {
     return NO;
 }
 
+- (BOOL)validateEngineConfigurationWithError:(NSError **)error {
+    CallWaveEngineConfiguration *engine = self.engineConfiguration;
+    CallWaveTURNConfiguration *turn = engine.TURNConfiguration;
+    BOOL validPolicy = engine.IPVersionPolicy >= CallWaveIPVersionPolicyAutomatic &&
+        engine.IPVersionPolicy <= CallWaveIPVersionPolicyIPv6Only;
+    BOOL validTURN = turn == nil ||
+        (turn.server.length > 0 && turn.username.length > 0 && turn.password.length > 0);
+    if (validPolicy && validTURN) {
+        return YES;
+    }
+    if (error != NULL) {
+        NSString *message = validPolicy
+            ? @"TURN server, username and password are required."
+            : @"The IP version policy is invalid.";
+        *error = CallWaveMakeError(CallWaveErrorInvalidConfiguration, message);
+    }
+    return NO;
+}
+
 #pragma mark - Engine and account lifecycle
 
 - (BOOL)claimRuntimeWithError:(NSError **)error {
@@ -384,6 +435,9 @@ static void dispatchMain(dispatch_block_t block) {
 - (BOOL)startEngineWithError:(NSError **)error {
     if (self.isRunning) {
         return YES;
+    }
+    if (![self validateEngineConfigurationWithError:error]) {
+        return NO;
     }
     if (![self claimRuntimeWithError:error]) {
         return NO;
@@ -530,8 +584,22 @@ static void dispatchMain(dispatch_block_t block) {
     media.thread_cnt = 1;
     media.has_ioqueue = PJ_TRUE;
     media.no_vad = engine.isVoiceActivityDetectionEnabled ? PJ_FALSE : PJ_TRUE;
-    media.enable_ice = engine.isICEEnabled ? PJ_TRUE : PJ_FALSE;
+    media.enable_ice = (engine.isICEEnabled || engine.TURNConfiguration != nil) ? PJ_TRUE : PJ_FALSE;
     media.ec_tail_len = (unsigned)engine.echoCancellationTailMilliseconds;
+
+    CallWaveTURNConfiguration *turn = engine.TURNConfiguration;
+    if (turn != nil) {
+        media.enable_turn = PJ_TRUE;
+        media.turn_server = pj_str((char *)turn.server.UTF8String);
+        media.turn_conn_type = pjTURNTransportForCallWaveTransport(turn.transport);
+        media.turn_auth_cred.type = PJ_STUN_AUTH_CRED_STATIC;
+        media.turn_auth_cred.data.static_cred.realm = pj_str("*");
+        media.turn_auth_cred.data.static_cred.username = pj_str((char *)turn.username.UTF8String);
+        media.turn_auth_cred.data.static_cred.data_type = PJ_STUN_PASSWD_PLAIN;
+        media.turn_auth_cred.data.static_cred.data = pj_str((char *)turn.password.UTF8String);
+        CWLogInfo(CallWaveLogCategoryNetwork, @"TURN enabled via transport %ld",
+                  (long)turn.transport);
+    }
 
     // Everything PJSIP prints is forwarded to CallWaveLog instead of stdout:
     // at level 4 and above the trace contains whole SIP messages, including
@@ -587,11 +655,38 @@ static void dispatchMain(dispatch_block_t block) {
 
 /// Must run on `sipQueue`.
 - (pj_status_t)ensureTransportLocked:(CallWaveTransport)transport {
-    NSUInteger bit = 1u << (NSUInteger)transport;
+    CallWaveIPVersionPolicy policy = self.engineConfiguration.IPVersionPolicy;
+    BOOL needsIPv4 = policy != CallWaveIPVersionPolicyIPv6Only;
+    BOOL needsIPv6 = policy != CallWaveIPVersionPolicyIPv4Only;
+    pj_status_t ipv4Status = PJ_SUCCESS;
+    pj_status_t ipv6Status = PJ_SUCCESS;
+
+    if (needsIPv4) {
+        ipv4Status = [self ensureTransportTypeLocked:pjTransportForCallWaveTransport(transport)
+                                                   bit:(1u << ((NSUInteger)transport * 2u))
+                                             transport:transport];
+    }
+    if (needsIPv6) {
+        ipv6Status = [self ensureTransportTypeLocked:pjIPv6TransportForCallWaveTransport(transport)
+                                                   bit:(1u << ((NSUInteger)transport * 2u + 1u))
+                                             transport:transport];
+    }
+
+    if (policy == CallWaveIPVersionPolicyIPv4Only) return ipv4Status;
+    if (policy == CallWaveIPVersionPolicyIPv6Only) return ipv6Status;
+    // Automatic is dual stack but remains usable on a single-stack network.
+    return ipv4Status == PJ_SUCCESS || ipv6Status == PJ_SUCCESS
+        ? PJ_SUCCESS
+        : ipv4Status;
+}
+
+/// Must run on `sipQueue`.
+- (pj_status_t)ensureTransportTypeLocked:(pjsip_transport_type_e)type
+                                      bit:(NSUInteger)bit
+                                transport:(CallWaveTransport)transport {
     if (gCreatedTransports & bit) {
         return PJ_SUCCESS;
     }
-
     pjsua_transport_config config;
     pjsua_transport_config_default(&config);
     config.port = 0;
@@ -604,10 +699,7 @@ static void dispatchMain(dispatch_block_t block) {
                          @"TLS certificate verification is disabled for this engine");
         }
     }
-
-    pj_status_t status = pjsua_transport_create(pjTransportForCallWaveTransport(transport),
-                                                &config,
-                                                NULL);
+    pj_status_t status = pjsua_transport_create(type, &config, NULL);
     if (status == PJ_SUCCESS) {
         gCreatedTransports |= bit;
     }
@@ -671,6 +763,24 @@ static void dispatchMain(dispatch_block_t block) {
     // SRTP over plain UDP signalling is what an intercom on a LAN offers; do
     // not additionally demand a secure signalling path.
     account.srtp_secure_signaling = 0;
+
+    switch (self.engineConfiguration.IPVersionPolicy) {
+        case CallWaveIPVersionPolicyIPv4Only:
+            account.ipv6_sip_use = PJSUA_IPV6_DISABLED;
+            account.ipv6_media_use = PJSUA_IPV6_DISABLED;
+            account.nat64_opt = PJSUA_NAT64_DISABLED;
+            break;
+        case CallWaveIPVersionPolicyIPv6Only:
+            account.ipv6_sip_use = PJSUA_IPV6_ENABLED_USE_IPV6_ONLY;
+            account.ipv6_media_use = PJSUA_IPV6_ENABLED_USE_IPV6_ONLY;
+            account.nat64_opt = PJSUA_NAT64_ENABLED;
+            break;
+        case CallWaveIPVersionPolicyAutomatic:
+            account.ipv6_sip_use = PJSUA_IPV6_ENABLED_NO_PREFERENCE;
+            account.ipv6_media_use = PJSUA_IPV6_ENABLED_NO_PREFERENCE;
+            account.nat64_opt = PJSUA_NAT64_ENABLED;
+            break;
+    }
 
     if (proxy.length > 0) {
         account.proxy_cnt = 1;
@@ -919,6 +1029,14 @@ static void dispatchMain(dispatch_block_t block) {
     self.hasObservedPath = YES;
     self.lastPathSignature = signature;
 
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    if ((signature & 1u) == 0) [parts addObject:@"unsatisfied"];
+    if (signature & (1u << 1)) [parts addObject:@"wifi"];
+    if (signature & (1u << 2)) [parts addObject:@"cellular"];
+    if (signature & (1u << 3)) [parts addObject:@"wired"];
+    NSString *summary = parts.count > 0 ? [parts componentsJoinedByString:@"+"] : @"other";
+    dispatchMain(^{ self.networkPathSummary = summary; });
+
     if (isFirst || signature == previous || (signature & 1u) == 0) {
         return;
     }
@@ -969,6 +1087,80 @@ static void dispatchMain(dispatch_block_t block) {
     }];
 }
 
+#pragma mark - Audio session lifecycle
+
+- (void)observeAudioSessionNotifications {
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(audioSessionRouteDidChange:)
+                   name:AVAudioSessionRouteChangeNotification object:nil];
+    [center addObserver:self selector:@selector(audioSessionWasInterrupted:)
+                   name:AVAudioSessionInterruptionNotification object:nil];
+    [center addObserver:self selector:@selector(audioMediaServicesWereReset:)
+                   name:AVAudioSessionMediaServicesWereResetNotification object:nil];
+}
+
+- (void)publishCurrentAudioRoute {
+    dispatchMain(^{
+        self.currentAudioRoute =
+            [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
+        CallWaveEvent *event = [CallWaveEvent eventWithType:CallWaveEventTypeAudioRouteChanged];
+        event.audioRoute = self.currentAudioRoute;
+        [self emitEvent:event];
+    });
+}
+
+- (void)audioSessionRouteDidChange:(NSNotification *)notification {
+    CallWaveAudioRoute *route =
+        [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
+    if (self.desiredSpeakerEnabled && !route.isSpeakerActive) {
+        NSError *error = nil;
+        [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
+                                                         error:&error];
+        if (error != nil) {
+            CWLogWarning(CallWaveLogCategoryAudio,
+                         @"could not restore the speaker after a route change: %@", error);
+        }
+    }
+    [self publishCurrentAudioRoute];
+}
+
+- (void)audioSessionWasInterrupted:(NSNotification *)notification {
+    NSNumber *rawType = notification.userInfo[AVAudioSessionInterruptionTypeKey];
+    AVAudioSessionInterruptionType type = (AVAudioSessionInterruptionType)rawType.unsignedIntegerValue;
+    BOOL began = type == AVAudioSessionInterruptionTypeBegan;
+    if (began) {
+        self.audioSessionActive = NO;
+        [self performSIPAsync:^{
+            if (gPJSUAStarted) {
+                ensurePJThreadRegistered("CallWaveAudioInterrupted");
+                pjsua_set_no_snd_dev();
+            }
+        }];
+    } else {
+        NSNumber *rawOptions = notification.userInfo[AVAudioSessionInterruptionOptionKey];
+        AVAudioSessionInterruptionOptions options = rawOptions.unsignedIntegerValue;
+        if ((options & AVAudioSessionInterruptionOptionShouldResume) != 0 && self.registry.count > 0) {
+            [self activateAudioSessionWithError:NULL];
+        }
+    }
+    dispatchMain(^{
+        CallWaveEvent *event =
+            [CallWaveEvent eventWithType:CallWaveEventTypeAudioSessionInterrupted];
+        event.audioSessionInterrupted = began;
+        [self emitEvent:event];
+    });
+}
+
+- (void)audioMediaServicesWereReset:(NSNotification *)notification {
+    CWLogWarning(CallWaveLogCategoryAudio, @"audio media services were reset");
+    self.audioSessionActive = NO;
+    [self configureAudioSessionWithError:NULL];
+    if (self.registry.count > 0) {
+        [self activateAudioSessionWithError:NULL];
+    }
+    [self publishCurrentAudioRoute];
+}
+
 #pragma mark - Events
 
 - (id<NSCopying, NSObject>)addEventObserver:(void (^)(CallWaveEvent *))handler {
@@ -1011,6 +1203,9 @@ static void dispatchMain(dispatch_block_t block) {
     }];
     NSMutableArray<NSUUID *> *uuids = [NSMutableArray arrayWithCapacity:calls.count];
     for (CallWaveCall *call in calls) {
+        if (call.state == CallWaveCallStateEnded) {
+            continue;
+        }
         [uuids addObject:call.uuid];
     }
     return uuids;
@@ -1057,6 +1252,9 @@ static void dispatchMain(dispatch_block_t block) {
     event.callUUID = uuid;
     event.callState = state;
     [self emitEvent:event];
+    if (state == CallWaveCallStateActive || state == CallWaveCallStateHeld) {
+        [self scheduleStatisticsSamplingIfNeeded];
+    }
 }
 
 /// Must run on the main queue.
@@ -1563,6 +1761,58 @@ forCallWithUUID:(NSUUID *)uuid
     return statistics;
 }
 
+- (CallWaveDiagnosticsSnapshot *)diagnosticsSnapshot {
+    NSArray<NSUUID *> *calls = self.activeCallUUIDs;
+    NSMutableDictionary<NSUUID *, CallWaveCallStatistics *> *statistics =
+        [NSMutableDictionary dictionary];
+    for (NSUUID *uuid in calls) {
+        CallWaveCallStatistics *value = [self statisticsForCallWithUUID:uuid];
+        if (value != nil) {
+            statistics[uuid] = value;
+        }
+    }
+    return [[CallWaveDiagnosticsSnapshot alloc]
+            initWithRunning:self.isRunning
+            registrationState:self.registrationState
+            registrationSIPStatusCode:self.lastRegistrationSIPStatusCode
+            networkPath:self.networkPathSummary ?: @"unknown"
+            audioRoute:self.currentAudioRoute ?:
+                [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance]
+            activeCallUUIDs:calls
+            callStatistics:statistics];
+}
+
+- (void)scheduleStatisticsSamplingIfNeeded {
+    NSTimeInterval interval = self.engineConfiguration.statisticsUpdateInterval;
+    if (interval <= 0 || self.statisticsSamplingScheduled) {
+        return;
+    }
+    self.statisticsSamplingScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        self.statisticsSamplingScheduled = NO;
+        BOOL hasLiveCall = NO;
+        for (NSUUID *uuid in self.activeCallUUIDs) {
+            CallWaveCallState state = [self stateForCallWithUUID:uuid];
+            if (state != CallWaveCallStateActive && state != CallWaveCallStateHeld) {
+                continue;
+            }
+            hasLiveCall = YES;
+            CallWaveCallStatistics *statistics = [self statisticsForCallWithUUID:uuid];
+            if (statistics != nil) {
+                CallWaveEvent *event =
+                    [CallWaveEvent eventWithType:CallWaveEventTypeCallStatisticsUpdated];
+                event.callUUID = uuid;
+                event.callStatistics = statistics;
+                [self emitEvent:event];
+            }
+        }
+        if (hasLiveCall) {
+            [self scheduleStatisticsSamplingIfNeeded];
+        }
+    });
+}
+
 + (NSString *)displayNameForCaller:(NSString *)caller {
     if (caller.length == 0) {
         return @"";
@@ -1743,6 +1993,11 @@ forCallWithUUID:(NSUUID *)uuid
     }
 
     [self openSoundDevice];
+    if (self.desiredSpeakerEnabled) {
+        [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
+                                                         error:NULL];
+    }
+    [self publishCurrentAudioRoute];
     return YES;
 }
 
@@ -1785,6 +2040,10 @@ forCallWithUUID:(NSUUID *)uuid
 
 - (void)audioSessionDidActivate:(AVAudioSession *)audioSession {
     [self openSoundDevice];
+    if (self.desiredSpeakerEnabled) {
+        [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:NULL];
+    }
+    [self publishCurrentAudioRoute];
 }
 
 - (void)audioSessionDidDeactivate:(AVAudioSession *)audioSession {
@@ -1795,6 +2054,7 @@ forCallWithUUID:(NSUUID *)uuid
             pjsua_set_no_snd_dev();
         }
     }];
+    [self publishCurrentAudioRoute];
 }
 
 /// Must run on `sipQueue` or a PJSIP callback thread.
@@ -1852,6 +2112,10 @@ forCallWithUUID:(NSUUID *)uuid
             *error = routeError ?: CallWaveMakeError(CallWaveErrorCallActionFailed,
                                                      @"Audio route could not be changed.");
         }
+    }
+    if (changed) {
+        self.desiredSpeakerEnabled = enabled;
+        [self publishCurrentAudioRoute];
     }
     return changed;
 }
@@ -1931,6 +2195,9 @@ forCallWithUUID:(NSUUID *)uuid
     NSString *resolved = caller.length > 0 ? caller : self.defaultCallerName;
     dispatchMain(^{
         CallWaveCall *call = [self.registry registerCallWithUUID:uuid];
+        if (call.isCancelledBeforeInvite) {
+            return;
+        }
         call.caller = resolved;
         call.displayName = [self displayNameForCaller:resolved];
         call.reportedToCallKit = YES;
@@ -1984,6 +2251,15 @@ forCallWithUUID:(NSUUID *)uuid
         }
 
         CallWaveCall *call = [self.registry registerCallWithUUID:uuid];
+        if (call.isCancelledBeforeInvite) {
+            if (callId != CallWaveSIPCallIdInvalid) {
+                [self performSIPAsync:^{
+                    [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE];
+                }];
+            }
+            [self complete:completion error:nil];
+            return;
+        }
         call.caller = resolved;
         call.displayName = [self displayNameForCaller:resolved];
         if (callId != CallWaveSIPCallIdInvalid) {
@@ -2044,6 +2320,51 @@ forCallWithUUID:(NSUUID *)uuid
                 completion(error);
             }
         }];
+    });
+}
+
+- (void)handleCancelledIncomingCallWithUUID:(NSUUID *)uuid
+                                      reason:(CXCallEndedReason)reason
+                                  completion:(CallWaveCompletion)completion {
+    if (uuid == nil) {
+        [self complete:completion
+                 error:CallWaveMakeError(CallWaveErrorInvalidArgument,
+                                         @"A call UUID is required.")];
+        return;
+    }
+    dispatchMain(^{
+        CallWaveCall *call = [self.registry callForUUID:uuid];
+        if (call != nil && call.state == CallWaveCallStateEnded) {
+            // Cancellation pushes are intentionally idempotent: the server may
+            // retry one after the SIP callback already removed the call.
+            [self complete:completion error:nil];
+            return;
+        }
+        if (call == nil) {
+            // A cancellation push can overtake the announcement push. Keep a
+            // tombstone so neither that push nor its late INVITE can ring.
+            call = [self.registry registerCallWithUUID:uuid];
+        }
+        if (call.callId == CallWaveSIPCallIdInvalid) {
+            [self.registry markCallCancelledBeforeInvite:uuid];
+        } else {
+            pjsua_call_id callId = call.callId;
+            [self performSIPAsync:^{
+                [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE];
+            }];
+        }
+        CWLogInfo(CallWaveLogCategoryPush, @"incoming call %@ was retracted by the server",
+                  uuid.UUIDString);
+        [self reportCallEndedWithUUID:uuid reason:reason];
+        [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
+        if (call.callId == CallWaveSIPCallIdInvalid) {
+            // Keep the cancelled record until a late INVITE is refused.
+            call.state = CallWaveCallStateEnded;
+            [self detachCurrentCallIfItIs:uuid];
+        } else {
+            [self clearCallWithUUID:uuid];
+        }
+        [self complete:completion error:nil];
     });
 }
 
@@ -2300,6 +2621,7 @@ forCallWithUUID:(NSUUID *)uuid
         }
         self.registrationState = state;
         self.registrationError = error;
+        self.lastRegistrationSIPStatusCode = status;
 
         id<CallWaveClientDelegate> delegate = self.delegate;
         if ([delegate respondsToSelector:
@@ -2380,15 +2702,12 @@ forCallWithUUID:(NSUUID *)uuid
     // delivering pushes to an application that never runs it at all. It is
     // therefore invoked from inside the report completion, exactly once, and
     // unconditionally once `pushCompletionTimeout` has elapsed.
-    __block BOOL acknowledged = NO;
+    CallWavePushCompletionGate *gate =
+        [[CallWavePushCompletionGate alloc] initWithCompletion:completion];
     void (^acknowledge)(NSString *) = ^(NSString *why) {
-        NSCAssert(NSThread.isMainThread, @"push acknowledgement must be serialised on main");
-        if (acknowledged || completion == nil) {
-            return;
+        if ([gate finish]) {
+            CWLogInfo(CallWaveLogCategoryPush, @"acknowledging VoIP push (%@)", why);
         }
-        acknowledged = YES;
-        CWLogInfo(CallWaveLogCategoryPush, @"acknowledging VoIP push (%@)", why);
-        completion();
     };
 
     dispatchMain(^{
@@ -2431,6 +2750,19 @@ didUpdatePushCredentials:(PKPushCredentials *)pushCredentials
 
 - (void)pushRegistry:(PKPushRegistry *)registry
 didInvalidatePushTokenForType:(PKPushType)type {
+    if (![type isEqualToString:PKPushTypeVoIP]) {
+        return;
+    }
+    dispatchMain(^{
+        id<CallWaveClientDelegate> delegate = self.delegate;
+        if ([delegate respondsToSelector:
+                @selector(callWaveClientDidInvalidateVoIPPushToken:)]) {
+            [delegate callWaveClientDidInvalidateVoIPPushToken:self];
+        }
+        CallWaveEvent *event =
+            [CallWaveEvent eventWithType:CallWaveEventTypeVoIPPushTokenInvalidated];
+        [self emitEvent:event];
+    });
 }
 
 - (void)pushRegistry:(PKPushRegistry *)registry
