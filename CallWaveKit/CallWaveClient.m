@@ -203,6 +203,7 @@ static void dispatchMain(dispatch_block_t block) {
 - (BOOL)managesCallKit;
 - (NSString *)displayNameForCaller:(nullable NSString *)caller;
 - (BOOL)canAcceptAnotherIncomingCall;
+- (nullable CallWaveCall *)takeCallCancelledBeforeInvite;
 - (void)handleIncomingSIPCall:(pjsua_call_id)callId caller:(NSString *)caller;
 - (void)handleSIPCallConfirmed:(pjsua_call_id)callId;
 - (void)handleSIPCallDisconnected:(pjsua_call_id)callId
@@ -1064,12 +1065,20 @@ static void dispatchMain(dispatch_block_t block) {
         return;
     }
     [self.registry removeCallWithUUID:uuid];
-    if ([uuid isEqual:self.currentCallUUID]) {
-        CallWaveCall *next = self.registry.mostRecentCall;
-        self.currentCallUUID = next.uuid;
-        self.currentCaller = next.displayName;
-        self.microphoneMuted = next != nil ? next.microphoneMuted : NO;
+    [self detachCurrentCallIfItIs:uuid];
+}
+
+/// Moves `currentCallUUID` off `uuid` without touching the registry, for a call
+/// whose record has to outlive the user's decision — a cancellation waiting for
+/// its late INVITE. Must run on the main queue.
+- (void)detachCurrentCallIfItIs:(nullable NSUUID *)uuid {
+    if (uuid == nil || ![uuid isEqual:self.currentCallUUID]) {
+        return;
     }
+    CallWaveCall *next = self.registry.mostRecentCall;
+    self.currentCallUUID = next.uuid;
+    self.currentCaller = next.displayName;
+    self.microphoneMuted = next != nil ? next.microphoneMuted : NO;
 }
 
 #pragma mark - Incoming-only calling
@@ -1362,6 +1371,19 @@ static void dispatchMain(dispatch_block_t block) {
         NSUUID *target = call.uuid ?: uuid;
         pjsua_call_id callId = call != nil ? call.callId : CallWaveSIPCallIdInvalid;
         if (callId == CallWaveSIPCallIdInvalid) {
+            // A call the push announced but whose INVITE has not arrived yet.
+            // There is nothing to reject through PJSUA, so the rejection is
+            // remembered instead and applied to the INVITE when it lands. The
+            // user's intent succeeded; this is not an error.
+            if ([self.registry markCallCancelledBeforeInvite:target]) {
+                CWLogInfo(CallWaveLogCategoryCall,
+                          @"call %@ %@ before its INVITE arrived; the INVITE will be refused",
+                          target.UUIDString, declining ? @"declined" : @"ended");
+                [self publishCallState:CallWaveCallStateEnded forUUID:target];
+                [self detachCurrentCallIfItIs:target];
+                [self complete:completion error:nil];
+                return;
+            }
             [self clearCallWithUUID:target];
             [self complete:completion
                      error:CallWaveMakeError(CallWaveErrorNoActiveCall,
@@ -1863,6 +1885,16 @@ forCallWithUUID:(NSUUID *)uuid
         return;
     }
     self.provider.configuration = [self makeProviderConfiguration];
+}
+
+/// Called from a PJSIP callback thread, like `-canAcceptAnotherIncomingCall`:
+/// the registry has its own lock, and a `180`/`603` cannot afford a queue hop.
+///
+/// The cancellation is honoured for `answerTimeout` — the same budget the
+/// client gives an INVITE to arrive — so it cannot outlive the call it belongs
+/// to and reject a later, unrelated one.
+- (CallWaveCall *)takeCallCancelledBeforeInvite {
+    return [self.registry takeCallCancelledBeforeInviteWithin:self.answerTimeout];
 }
 
 - (BOOL)canAcceptAnotherIncomingCall {
@@ -2428,6 +2460,19 @@ static void onIncomingCall(pjsua_acc_id accId, pjsua_call_id callId, pjsip_rx_da
     CallWaveClient *client = gActiveClient;
     if (client == nil) {
         pjsua_call_answer(callId, PJSIP_SC_TEMPORARILY_UNAVAILABLE, NULL, NULL);
+        return;
+    }
+
+    // The user may have rejected this call from the CallKit screen before its
+    // INVITE arrived — the push routinely beats the INVITE by a second or more.
+    // The peer is still waiting for a final response, so answer one now instead
+    // of ringing: `603` here, never CANCEL, because this side is the callee.
+    CallWaveCall *cancelled = [client takeCallCancelledBeforeInvite];
+    if (cancelled != nil) {
+        pjsua_call_answer(callId, PJSIP_SC_DECLINE, NULL, NULL);
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"INVITE for call %@ arrived after the user rejected it; answered 603",
+                  cancelled.uuid.UUIDString);
         return;
     }
 

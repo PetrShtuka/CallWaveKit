@@ -36,7 +36,8 @@ jobs:
       - uses: actions/checkout@v4
       # Builds the pod into a synthetic application, which is what keeps the
       # CocoaPods integration honest now that the repository has no demo app.
-      # The bundled PJSIP binary is built for iOS 16 while the pod declares 15,
-      # which is a documented linker warning rather than a defect.
+      # --allow-warnings is a safety net, not a workaround: the lint passes
+      # clean since 0.3.1 realigned the PJSIP binary's minos with the declared
+      # platform. Drop the flag to make a new warning fail the build.
       - name: pod lib lint
         run: pod lib lint CallWaveKit.podspec --allow-warnings --skip-tests --platforms=ios

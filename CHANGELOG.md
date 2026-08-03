@@ -4,6 +4,46 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [0.3.1] — 2026-08-02
+
+### Fixed
+
+- **Rejecting a call before its INVITE arrives now stops the caller ringing.**
+  A VoIP push routinely beats the INVITE by a second or more, and the reject
+  path — unlike the answer path, which polls for the call until `answerTimeout`
+  — sent nothing to SIP when there was no call id yet. It deleted the pending
+  record and returned `CallWaveErrorNoActiveCall`, so no `603`, `486` or `480`
+  ever left the device. The INVITE then arrived to an empty registry, was
+  answered `180 Ringing`, and became a *second* incoming call under a fresh
+  UUID: the intercom kept ringing until `incomingCallTimeout`, and the host saw
+  `.incoming` again after `.ended`.
+
+  `-endCallWithUUID:completion:` and `-declineCallWithUUID:completion:` now
+  keep the record and mark it cancelled instead of deleting it, report
+  `CallWaveCallStateEnded` and complete without an error — the user's intent
+  succeeded, so it is not a failure. `on_incoming_call` checks for such a
+  cancellation before it rings, and answers `603 Decline` instead. Being the
+  callee, it answers the INVITE; it does not send CANCEL.
+
+  A cancellation expires after `answerTimeout`, so one whose INVITE never
+  arrived cannot reject an unrelated later call, and a call still legitimately
+  waiting for its INVITE always takes precedence over a pending cancellation.
+  Nothing is reported to CallKit from this path: in host-owned mode the
+  application owns the provider and ends the call from the state stream.
+
+- **The bundled PJSIP binary is built for iOS 15.0 again.** It carried
+  `minos 16.0` while the package declares iOS 15.0, so every application with a
+  15.x deployment target linked it with a `built for newer 'iOS' version`
+  warning per object file — 199 of them in one real consumer. The build script
+  had already been lowered to 15.0; the XCFramework simply had not been rebuilt
+  since. Every slice now reports `minos 15.0`: `ios-arm64` (arm64) and
+  `ios-arm64_x86_64-simulator` (arm64 and x86_64).
+
+  The rebuild is PJSIP 2.17 with the same options as before. The exported
+  symbols are unchanged — 2241 before and after, with no additions or
+  removals — the headers are untouched, and the XCFramework's `Info.plist` is
+  byte-identical. The public API of CallWaveKit did not change.
+
 ## [0.3.0] — 2026-08-02
 
 0.2.0 was staged during this work but never tagged or published, so it does

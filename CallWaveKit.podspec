@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name = 'CallWaveKit'
-  spec.version = '0.3.0'
+  spec.version = '0.3.1'
   spec.summary = 'Instance-owned incoming SIP calling for iOS with CallKit.'
   spec.description = <<-DESC
     CallWaveKit owns a PJSUA runtime, SIP registration, incoming audio calls,

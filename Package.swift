@@ -56,6 +56,18 @@ let package = Package(
             name: "CallWaveKitTests",
             dependencies: ["CallWaveKit", "CallWaveKitAsync"],
             path: "Tests/CallWaveKitTests"
+        ),
+        // CallWaveCallRegistry is an implementation detail behind a private
+        // header, so its tests are Objective-C and reach it through a header
+        // search path rather than through the module. Keeping them out of the
+        // Swift target is what avoids widening the public API for testing.
+        .testTarget(
+            name: "CallWaveKitRegistryTests",
+            dependencies: ["CallWaveKit"],
+            path: "Tests/CallWaveKitRegistryTests",
+            cSettings: [
+                .headerSearchPath("../../CallWaveKit")
+            ]
         )
     ]
 )
