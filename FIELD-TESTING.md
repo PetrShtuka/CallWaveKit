@@ -9,6 +9,14 @@ done by hand, on a device, against an intercom.
 Run it before tagging a release, and after any change to the answer path, the
 push path, the audio session or the registration lifecycle.
 
+## 0.4.0 release record
+
+On 2026-08-04 the maintainer confirmed registration and a real incoming call
+with two-way audio on a physical iPhone through the Majordom PBX. Automated CI
+also passed the simulator unit suite, generic device build, strict concurrency,
+CocoaPods lint and PJSIP binary verification. Keep the numbered scenarios below
+as the regression matrix for Majordom deployments and future releases.
+
 ## Setup
 
 - A physical iPhone. The Simulator has no PushKit and no usable audio route.

@@ -19,7 +19,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "PJSIP",
-            path: "Vendor/PJSIP.xcframework"
+            url: "https://github.com/PetrShtuka/CallWaveKit/releases/download/pjsip-2.17-ios15-apple-tls.1/PJSIP.xcframework.zip",
+            checksum: "262e3341dd2d6b4737795902f76a11611709ed3a16908521f1700229e28c6bee"
         ),
         .target(
             name: "CallWaveKit",

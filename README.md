@@ -47,8 +47,8 @@ Or in a `Package.swift`:
 
 The product vends two modules: `CallWaveKit` (the Objective-C API) and
 `CallWaveKitAsync` (Swift concurrency on top of it). Nothing else is needed —
-`PJSIP.xcframework` ships with the package, with `arm64` for the device and
-`arm64` plus `x86_64` for the simulator.
+SwiftPM downloads the checksum-pinned `PJSIP.xcframework` release asset, with
+`arm64` for the device and `arm64` plus `x86_64` for the simulator.
 
 ### CocoaPods
 
@@ -210,15 +210,17 @@ for a in Vendor/PJSIP.xcframework/*/libPJSIP.a; do
 done
 ```
 
-The XCFramework is 21 MB and every clone pays for it. For a tagged release,
-attach the zip instead and point the binary target at its URL:
+The source XCFramework is retained for reproducible development and CocoaPods.
+SwiftPM releases use an immutable binary asset so package consumers do not
+download the 21 MB framework through Git history. To package a rebuilt binary:
 
 ```sh
 ./Scripts/package-pjsip-release.sh 0.4.0
 ```
 
-The script prints the archive's checksum and the `.binaryTarget(url:checksum:)`
-snippet to paste into `Package.swift`.
+The script prints the archive checksum and the `.binaryTarget(url:checksum:)`
+snippet. Release assets include the PJSIP build manifest, GPLv2 copy and all
+bundled third-party licences.
 
 ## License
 
