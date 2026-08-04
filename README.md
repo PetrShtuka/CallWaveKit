@@ -15,14 +15,14 @@ deliberately narrow: **CallWaveKit does not place outgoing calls.**
 
 ## Licensing: read this before shipping
 
-CallWaveKit itself is MIT. **The PJSIP binary it bundles is not.** PJSIP is
-GPLv2 or a separate commercial licence from Teluu, and linking it into a
-closed-source application without that commercial licence puts you in breach of
-the GPL.
+CallWaveKit source is MIT. **The PJSIP binary it bundles is not.** The public
+binary is GPL-2.0-or-later. Applications distributing that binary must comply
+with the GPL for the resulting program or obtain an appropriate alternative
+PJSIP licence directly from Teluu.
 
-Review `Vendor/PJSIP-COPYING` and `Vendor/ThirdPartyLicenses`, and settle the
-licence before you ship. This applies to every consumer of this package,
-however it is installed.
+Read [LICENSING.md](LICENSING.md), `Vendor/PJSIP-COPYING` and
+`Vendor/ThirdPartyLicenses` before distribution. Installing the package does
+not grant or transfer a proprietary PJSIP licence.
 
 ## Requirements
 
@@ -36,13 +36,13 @@ however it is installed.
 ### Swift Package Manager
 
 In Xcode: **File → Add Package Dependencies**, enter
-`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.4.0` or later,
+`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.4.1` or later,
 and add the `CallWaveKit` product to your application target.
 
 Or in a `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.4.0")
+.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.4.1")
 ```
 
 The product vends two modules: `CallWaveKit` (the Objective-C API) and
@@ -63,7 +63,7 @@ To track the repository directly instead of the published pod — an unreleased
 fix, say — point at the tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.4.0'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.4.1'
 ```
 
 ## Host application settings
@@ -215,7 +215,7 @@ SwiftPM releases use an immutable binary asset so package consumers do not
 download the 21 MB framework through Git history. To package a rebuilt binary:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.4.0
+./Scripts/package-pjsip-release.sh 0.4.1
 ```
 
 The script prints the archive checksum and the `.binaryTarget(url:checksum:)`
@@ -224,5 +224,6 @@ bundled third-party licences.
 
 ## License
 
-CallWaveKit is MIT — see [LICENSE](LICENSE). The bundled PJSIP binary is not;
-see [Licensing](#licensing-read-this-before-shipping) above.
+CallWaveKit source is MIT — see [LICENSE](LICENSE). The bundled PJSIP binary is
+GPL-2.0-or-later or requires a separately arranged proprietary licence. See
+[LICENSING.md](LICENSING.md) for the component-by-component terms.

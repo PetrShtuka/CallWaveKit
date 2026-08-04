@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name = 'CallWaveKit'
-  spec.version = '0.4.0'
+  spec.version = '0.4.1'
   spec.summary = 'Incoming SIP SDK for iOS intercoms.'
   spec.description = <<-DESC
     CallWaveKit owns a PJSUA runtime, SIP registration, incoming audio calls,
@@ -8,7 +8,10 @@ Pod::Spec.new do |spec|
     DTMF, TURN, IPv6 and credential-free diagnostics.
   DESC
   spec.homepage = 'https://github.com/PetrShtuka/CallWaveKit'
-  spec.license = { type: 'MIT', file: 'LICENSE' }
+  spec.license = {
+    type: 'MIT AND GPL-2.0-or-later',
+    file: 'LICENSING.md'
+  }
   spec.author = { 'Petr Shtuka' => 'pitmailcom@gmail.com' }
   spec.source = {
     git: 'https://github.com/PetrShtuka/CallWaveKit.git',
