@@ -67,14 +67,14 @@ CocoaPods fail with a version mismatch, because `spec.source` resolves
 
 ```sh
 git checkout main && git pull
-git tag -a 0.4.0 -m "CallWaveKit 0.4.0"
-git push origin 0.4.0
+git tag -a 0.4.1 -m "CallWaveKit 0.4.1"
+git push origin 0.4.1
 ```
 
 Verify the tag and the podspec agree before going further:
 
 ```sh
-git show 0.4.0^{commit}:CallWaveKit.podspec | grep spec.version
+git show 0.4.1^{commit}:CallWaveKit.podspec | grep spec.version
 ```
 
 ### 4. Validate against the published tag
@@ -114,7 +114,7 @@ needs.
 it. To attach it to a release instead:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.4.0
+./Scripts/package-pjsip-release.sh 0.4.1
 ```
 
 The script prints the archive's checksum and the matching

@@ -4,6 +4,18 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [0.4.1] - 2026-08-04
+
+### Licensing
+
+- Clarified that CallWaveKit source is MIT while the bundled public PJSIP
+  binary is GPL-2.0-or-later and remains separately licensed.
+- Added the CallWaveKit maintainer's copyright without removing the retained
+  copyright notice from earlier MIT-licensed work.
+- Updated the CocoaPods metadata and added `LICENSING.md` so package consumers
+  see both licences before distribution. This release contains no runtime or
+  public API changes.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added

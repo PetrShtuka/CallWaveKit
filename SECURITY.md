@@ -16,6 +16,7 @@ SIP messages; do not enable them in App Store or TestFlight builds.
 
 ## PJSIP licence
 
-The repository bundles PJSIP under GPLv2. A closed-source application needs a
-commercial licence from Teluu. Each application team must verify its licence
-before distribution.
+The public PJSIP binary is GPL-2.0-or-later. Applications distributing it must
+comply with the GPL for the resulting program or obtain an appropriate
+alternative licence directly from Teluu. See `LICENSING.md` for the complete
+component-level notice.
