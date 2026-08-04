@@ -4,7 +4,7 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-08-04
 
 ### Added
 
@@ -31,12 +31,14 @@ bump may contain breaking changes, and each one is listed below.
 - CI checks TLS symbols, XCFramework slices and the iOS 15 deployment floor.
   CocoaPods lint now fails on warnings.
 
-### Release gate
+### Release validation
 
-Do not tag 0.4.0 until the Major-ios device checklist in `FIELD-TESTING.md`
-passes. SwiftPM must keep the local binary target until the GitHub release
-asset exists; the release maintainer then uploads the zip and changes the
-target to its URL and checksum in the same release commit.
+- All 67 unit tests, the generic device build, strict Swift concurrency build,
+  CocoaPods lint and the deterministic PJSIP binary verifier pass.
+- The maintainer confirmed registration and a real incoming call with two-way
+  audio on a physical iPhone through the Majordom PBX.
+- SwiftPM resolves the immutable PJSIP 2.17 binary release with checksum
+  `262e3341dd2d6b4737795902f76a11611709ed3a16908521f1700229e28c6bee`.
 
 ## [0.3.1] — 2026-08-02
 

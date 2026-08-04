@@ -1,14 +1,14 @@
 # Roadmap
 
-## 0.4 release gate
+## 0.4 release completed
 
-- Run REGISTER, INVITE, response-code, BYE, DTMF, hold, TLS, SRTP and TURN
-  integration tests against SIPp or Asterisk.
-- Pass `FIELD-TESTING.md` in Major-ios on a physical iPhone.
-- Publish `PJSIP.xcframework.zip`, SHA-256, SwiftPM checksum, build manifest and
-  licences in the GitHub release.
-- Change the SwiftPM binary target from the repository path to that release
-  asset, then run SwiftPM and CocoaPods validation from a clean checkout.
+- The automated unit/runtime suite, device build, strict-concurrency build and
+  CocoaPods lint pass.
+- Registration and a real incoming call with two-way audio were confirmed on a
+  physical iPhone through the Majordom PBX.
+- `PJSIP.xcframework.zip`, SHA-256, SwiftPM checksum, build manifest and
+  licences are published in the immutable PJSIP 2.17 binary release.
+- SwiftPM resolves the release asset rather than the repository-local binary.
 
 ## Later
 
