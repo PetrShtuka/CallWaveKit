@@ -17,7 +17,14 @@ typedef NS_ENUM(NSInteger, CallWaveEventType) {
     CallWaveEventTypeCallStateChanged,
     CallWaveEventTypeCallEnded,
     CallWaveEventTypeVoIPPushTokenUpdated,
+    CallWaveEventTypeVoIPPushTokenInvalidated,
+    CallWaveEventTypeAudioRouteChanged,
+    CallWaveEventTypeAudioSessionInterrupted,
+    CallWaveEventTypeCallStatisticsUpdated,
 };
+
+@class CallWaveAudioRoute;
+@class CallWaveCallStatistics;
 
 /// One notification from `CallWaveClient`, delivered to every block registered
 /// with `-addEventObserver:`. This is the same information the delegate gets,
@@ -39,6 +46,12 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, copy, readonly, nullable) NSString *caller;
 /// Hexadecimal token for `…VoIPPushTokenUpdated`.
 @property (nonatomic, copy, readonly, nullable) NSString *pushToken;
+/// Meaningful for `…AudioRouteChanged`.
+@property (nonatomic, strong, readonly, nullable) CallWaveAudioRoute *audioRoute;
+/// `YES` when an interruption began, `NO` when it ended.
+@property (nonatomic, assign, readonly, getter=isAudioSessionInterrupted) BOOL audioSessionInterrupted;
+/// Meaningful for `…CallStatisticsUpdated`.
+@property (nonatomic, strong, readonly, nullable) CallWaveCallStatistics *callStatistics;
 /// Meaningful for `…CallEnded`.
 @property (nonatomic, assign, readonly) CXCallEndedReason endedReason;
 /// Set when the event reports a failure, e.g. a rejected registration.

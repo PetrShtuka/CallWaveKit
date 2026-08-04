@@ -1,11 +1,11 @@
 Pod::Spec.new do |spec|
   spec.name = 'CallWaveKit'
-  spec.version = '0.3.1'
-  spec.summary = 'Instance-owned incoming SIP calling for iOS with CallKit.'
+  spec.version = '0.4.0'
+  spec.summary = 'Incoming SIP SDK for iOS intercoms.'
   spec.description = <<-DESC
     CallWaveKit owns a PJSUA runtime, SIP registration, incoming audio calls,
     CallKit coordination, PushKit wake-up handling, two-way audio, RTP mute,
-    DTMF and network-change recovery.
+    DTMF, TURN, IPv6 and credential-free diagnostics.
   DESC
   spec.homepage = 'https://github.com/PetrShtuka/CallWaveKit'
   spec.license = { type: 'MIT', file: 'LICENSE' }
@@ -33,7 +33,7 @@ Pod::Spec.new do |spec|
 
   spec.vendored_frameworks = 'Vendor/PJSIP.xcframework'
   spec.frameworks = 'AVFoundation', 'AudioToolbox', 'CallKit', 'CFNetwork',
-                    'CoreAudio', 'CoreFoundation', 'Network', 'PushKit', 'UIKit'
+                    'CoreAudio', 'CoreFoundation', 'Network', 'PushKit', 'Security', 'UIKit'
   spec.libraries = 'm', 'pthread'
   spec.pod_target_xcconfig = {
     'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) PJ_AUTOCONF=1',

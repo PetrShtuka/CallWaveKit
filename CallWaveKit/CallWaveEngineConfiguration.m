@@ -1,4 +1,5 @@
 #import "CallWaveEngineConfiguration.h"
+#import "CallWaveTURNConfiguration.h"
 
 @implementation CallWaveEngineConfiguration
 
@@ -9,11 +10,13 @@
         _logLevel = CallWaveLogLevelWarning;
         _ICEEnabled = NO;
         _STUNServers = @[];
+        _IPVersionPolicy = CallWaveIPVersionPolicyAutomatic;
         _preferredCodecs = @[];
         _verifiesTLSCertificate = YES;
         _echoCancellationTailMilliseconds = 200;
         _voiceActivityDetectionEnabled = NO;
         _handlesNetworkChanges = YES;
+        _statisticsUpdateInterval = 0;
     }
     return self;
 }
@@ -34,6 +37,19 @@
     _preferredCodecs = [preferredCodecs copy] ?: @[];
 }
 
+- (void)setTURNConfiguration:(CallWaveTURNConfiguration *)TURNConfiguration {
+    _TURNConfiguration = [TURNConfiguration copy];
+    if (_TURNConfiguration != nil) {
+        _ICEEnabled = YES;
+    }
+}
+
+- (void)setStatisticsUpdateInterval:(NSTimeInterval)statisticsUpdateInterval {
+    _statisticsUpdateInterval = statisticsUpdateInterval <= 0
+        ? 0
+        : MAX(statisticsUpdateInterval, 1.0);
+}
+
 - (id)copyWithZone:(NSZone *)zone {
     CallWaveEngineConfiguration *copy = [[CallWaveEngineConfiguration allocWithZone:zone] init];
     copy.maximumCalls = self.maximumCalls;
@@ -41,11 +57,14 @@
     copy.userAgent = self.userAgent;
     copy.ICEEnabled = self.ICEEnabled;
     copy.STUNServers = self.STUNServers;
+    copy.TURNConfiguration = self.TURNConfiguration;
+    copy.IPVersionPolicy = self.IPVersionPolicy;
     copy.preferredCodecs = self.preferredCodecs;
     copy.verifiesTLSCertificate = self.verifiesTLSCertificate;
     copy.echoCancellationTailMilliseconds = self.echoCancellationTailMilliseconds;
     copy.voiceActivityDetectionEnabled = self.voiceActivityDetectionEnabled;
     copy.handlesNetworkChanges = self.handlesNetworkChanges;
+    copy.statisticsUpdateInterval = self.statisticsUpdateInterval;
     return copy;
 }
 

@@ -4,6 +4,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class CallWaveTURNConfiguration;
+
 /// Settings that belong to the PJSUA runtime rather than to a SIP account.
 ///
 /// The runtime is process-global and is configured once, when the first
@@ -30,6 +32,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// `host` or `host:port` entries, e.g. `@[@"stun.example.com:3478"]`.
 @property (nonatomic, copy) NSArray<NSString *> *STUNServers;
 
+/// Optional TURN relay used by ICE when direct media paths fail. Setting this
+/// automatically enables ICE. Credentials are never logged.
+@property (nonatomic, copy, nullable) CallWaveTURNConfiguration *TURNConfiguration;
+
+/// SIP and media address-family policy. Defaults to automatic.
+@property (nonatomic, assign) CallWaveIPVersionPolicy IPVersionPolicy;
+
 /// Codec identifiers in descending priority, e.g.
 /// `@[@"PCMA/8000", @"PCMU/8000", @"opus/48000"]`. Codecs that are not listed
 /// keep a lower priority but stay enabled. An empty array — the default —
@@ -53,6 +62,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// is what keeps an intercom reachable across a Wi-Fi to cellular handover.
 /// Defaults to YES.
 @property (nonatomic, assign) BOOL handlesNetworkChanges;
+
+/// Interval for `CallWaveEventTypeCallStatisticsUpdated`, in seconds. `0` —
+/// the default — disables periodic sampling. Values below one second are
+/// clamped to one to avoid wasting battery.
+@property (nonatomic, assign) NSTimeInterval statisticsUpdateInterval;
 
 + (instancetype)defaultConfiguration NS_SWIFT_NAME(defaultConfiguration());
 

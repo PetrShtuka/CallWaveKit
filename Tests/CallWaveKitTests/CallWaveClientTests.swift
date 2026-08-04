@@ -214,6 +214,86 @@ final class CallWaveClientPropertyTests: XCTestCase {
             XCTAssertEqual((error as NSError).code, CallWaveError.Code.notConfigured.rawValue)
         }
     }
+
+    func testRemoteCancellationIsIdempotentWhenCallIsUnknown() {
+        let client = makeClient()
+        let uuid = UUID()
+        let cancelled = expectation(description: "cancelled")
+
+        client.handleCancelledIncomingCall(
+            uuid: uuid, reason: .remoteEnded
+        ) { error in
+            XCTAssertNil(error)
+            cancelled.fulfill()
+        }
+
+        wait(for: [cancelled], timeout: 2)
+        XCTAssertEqual(client.state(forCallWithUUID: uuid), .ended)
+        XCTAssertFalse(client.activeCallUUIDs.contains(uuid))
+
+        // An announcement push that loses the race to the cancellation must
+        // not revive the call.
+        client.prepareIncomingCall(uuid: uuid, caller: "Front door")
+        XCTAssertEqual(client.state(forCallWithUUID: uuid), .ended)
+    }
+
+    func testDiagnosticsContainOnlySanitizedRuntimeState() throws {
+        let client = makeClient()
+        let snapshot = client.diagnosticsSnapshot()
+        let dictionary = snapshot.dictionaryRepresentation()
+        let data = try JSONSerialization.data(withJSONObject: dictionary)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("password"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("authorization"))
+        XCTAssertFalse(json.localizedCaseInsensitiveContains("sip:"))
+        XCTAssertEqual(dictionary["running"] as? Bool, false)
+        XCTAssertNotNil(dictionary["audioOutputs"])
+    }
+
+    func testIncompleteTURNConfigurationIsRejectedBeforeStartingPJSIP() {
+        let engine = CallWaveEngineConfiguration.defaultConfiguration()
+        engine.turnConfiguration = CallWaveTURNConfiguration(
+            server: "",
+            transport: .UDP,
+            username: "user",
+            password: "secret"
+        )
+        let client = makeClient(engine: engine)
+
+        XCTAssertThrowsError(try client.startEngine()) { error in
+            XCTAssertEqual(
+                (error as NSError).code,
+                CallWaveError.Code.invalidConfiguration.rawValue
+            )
+        }
+        XCTAssertFalse(client.isRunning)
+    }
+}
+
+final class CallWaveTLSCapabilityTests: XCTestCase {
+
+    func testTLSAccountCanCreateItsTransport() throws {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "tls.invalid"
+            builder.port = 5061
+            builder.transport = .TLS
+            builder.username = "tls-probe"
+            builder.password = "not-a-real-credential"
+        }
+        let client = CallWaveClient(
+            configuration: configuration,
+            options: [],
+            provider: nil,
+            engineConfiguration: nil
+        )
+        defer { client.stop() }
+
+        // Registration may fail asynchronously because the hostname is
+        // deliberately non-routable. This probes transport creation only: a
+        // binary made with --disable-ssl fails synchronously here.
+        XCTAssertNoThrow(try client.start())
+    }
 }
 
 final class CallWaveEngineConfigurationTests: XCTestCase {
@@ -230,6 +310,9 @@ final class CallWaveEngineConfigurationTests: XCTestCase {
         XCTAssertEqual(engine.echoCancellationTailMilliseconds, 200)
         XCTAssertFalse(engine.isVoiceActivityDetectionEnabled)
         XCTAssertTrue(engine.handlesNetworkChanges)
+        XCTAssertEqual(engine.ipVersionPolicy, .automatic)
+        XCTAssertNil(engine.turnConfiguration)
+        XCTAssertEqual(engine.statisticsUpdateInterval, 0)
     }
 
     func testMaximumCallsNeverDropsBelowOne() {
@@ -254,5 +337,34 @@ final class CallWaveEngineConfigurationTests: XCTestCase {
 
         XCTAssertEqual(copy.maximumCalls, 3)
         XCTAssertEqual(copy.userAgent, "CallWave/1.0")
+    }
+
+    func testTURNEnablesICEAndRedactsCredentials() {
+        let engine = CallWaveEngineConfiguration.defaultConfiguration()
+        let turn = CallWaveTURNConfiguration(
+            server: "turn.example.com:3478",
+            transport: .TLS,
+            username: "private-user",
+            password: "super-secret"
+        )
+
+        engine.turnConfiguration = turn
+
+        XCTAssertTrue(engine.isICEEnabled)
+        XCTAssertEqual(engine.turnConfiguration?.server, "turn.example.com:3478")
+        XCTAssertFalse(turn.description.contains("private-user"))
+        XCTAssertFalse(turn.description.contains("super-secret"))
+        XCTAssertFalse(turn.description.contains("turn.example.com"))
+    }
+
+    func testStatisticsIntervalIsDisabledOrClampedToOneSecond() {
+        let engine = CallWaveEngineConfiguration.defaultConfiguration()
+
+        engine.statisticsUpdateInterval = -1
+        XCTAssertEqual(engine.statisticsUpdateInterval, 0)
+        engine.statisticsUpdateInterval = 0.1
+        XCTAssertEqual(engine.statisticsUpdateInterval, 1)
+        engine.statisticsUpdateInterval = 5
+        XCTAssertEqual(engine.statisticsUpdateInterval, 5)
     }
 }

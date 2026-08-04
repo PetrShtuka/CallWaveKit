@@ -100,6 +100,14 @@ engine.preferredCodecs = ["PCMA/8000", "PCMU/8000"]
 engine.logLevel = .info
 engine.stunServers = ["stun.example.com:3478"]
 engine.isICEEnabled = true
+engine.turnConfiguration = CallWaveTURNConfiguration(
+    server: "turn.example.com:5349",
+    transport: .TLS,
+    username: turnUser,
+    password: turnPassword
+)
+engine.ipVersionPolicy = .automatic             // IPv4, IPv6 and NAT64
+engine.statisticsUpdateInterval = 5
 engine.verifiesTLSCertificate = true           // the default
 
 let calls = CallWaveClient(
@@ -112,6 +120,9 @@ let calls = CallWaveClient(
 
 `verifiesTLSCertificate` defaults to `true`. An intercom with a self-signed
 certificate will not register until the host turns it off deliberately.
+TURN credentials stay out of standard logs, object descriptions and diagnostic
+snapshots. Use `.ipv4Only` for an intercom that publishes unusable AAAA records
+or accepts media on IPv4 only.
 
 ## Account settings
 
@@ -206,6 +217,17 @@ application. If CallKit has not called back within `pushCompletionTimeout`
 ```swift
 calls.handleVoIPPushPayload(payload.dictionaryPayload, completion: completion)
 ```
+
+If the server sends a second push to retract the call, use the same UUID:
+
+```swift
+try await calls.handleCancelledIncomingCall(uuid: callUUID, reason: .remoteEnded)
+```
+
+The method dismisses the pending CallKit call and records the cancellation. A
+late INVITE with that UUID receives `603 Decline` instead of ringing again.
+`callWaveClientDidInvalidateVoIPPushToken(_:)` tells the host to remove the
+token from its backend.
 
 That method parses `data.uuid` and `data.callerID`. For a different payload
 shape, install a parser rather than reimplementing the reporting sequence:

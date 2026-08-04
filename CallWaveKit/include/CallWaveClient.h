@@ -9,6 +9,8 @@
 #import "CallWaveEvent.h"
 #import "CallWaveIncomingCallDescriptor.h"
 #import "CallWaveLogging.h"
+#import "CallWaveAudioRoute.h"
+#import "CallWaveDiagnosticsSnapshot.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -27,6 +29,8 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
                   uuid:(nullable NSUUID *)uuid;
 - (void)callWaveClient:(CallWaveClient *)client
  didUpdateVoIPPushToken:(NSString *)token;
+/// The host must remove the invalidated token from its push backend.
+- (void)callWaveClientDidInvalidateVoIPPushToken:(CallWaveClient *)client;
 /// Sent when the SIP side ends a call. In host-owned CallKit mode without an
 /// injected provider this is the host's cue to call
 /// `-reportCallWithUUID:endedAtDate:reason:` on its own provider.
@@ -86,6 +90,8 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 @property (nonatomic, copy, nullable, readonly) NSString *currentCaller;
 /// Microphone state of the most recent call.
 @property (nonatomic, assign, readonly, getter=isMicrophoneMuted) BOOL microphoneMuted;
+/// Sanitized active route; port types only, never user-visible device names.
+@property (nonatomic, strong, readonly) CallWaveAudioRoute *currentAudioRoute;
 /// Every call the client is tracking, oldest first.
 @property (nonatomic, copy, readonly) NSArray<NSUUID *> *activeCallUUIDs;
 
@@ -249,6 +255,9 @@ forCallWithUUID:(nullable NSUUID *)uuid
 - (nullable CallWaveCallStatistics *)statisticsForCallWithUUID:(nullable NSUUID *)uuid
     NS_SWIFT_NAME(statistics(forCallWithUUID:));
 
+/// Credential-free runtime state suitable for a support attachment.
+- (CallWaveDiagnosticsSnapshot *)diagnosticsSnapshot;
+
 /// The lock-screen name CallWaveKit would derive from a raw SIP `From` value:
 /// the quoted display name, else the user part, else the value itself.
 + (NSString *)displayNameForCaller:(nullable NSString *)caller
@@ -306,6 +315,14 @@ forCallWithUUID:(nullable NSUUID *)uuid
                             caller:(nullable NSString *)caller
                         completion:(nullable CallWaveCompletion)completion
     NS_SWIFT_NAME(reportIncomingCall(uuid:caller:completion:));
+
+/// Handles a server push that retracts an earlier incoming-call push. It
+/// closes a pending CallKit screen, prevents a late INVITE from ringing again
+/// and is idempotent when the call is already gone.
+- (void)handleCancelledIncomingCallWithUUID:(NSUUID *)uuid
+                                      reason:(CXCallEndedReason)reason
+                                  completion:(nullable CallWaveCompletion)completion
+    NS_SWIFT_NAME(handleCancelledIncomingCall(uuid:reason:completion:));
 
 #pragma mark - PushKit
 
