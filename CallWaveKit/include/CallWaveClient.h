@@ -128,7 +128,9 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 @property (nonatomic, assign) CallWaveDTMFMethod dtmfMethod;
 
 /// Replaces the built-in parsing of `data.uuid` and `data.callerID` in
-/// `-handleVoIPPushPayload:completion:`.
+/// `-handleVoIPPushPayload:completion:`. To announce a remote hangup rather
+/// than a new call, return a descriptor whose `cancellation` flag is set —
+/// `+[CallWaveIncomingCallDescriptor cancellationDescriptorWithUUID:]`.
 @property (nonatomic, copy, nullable) CallWavePushPayloadParser pushPayloadParser;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -317,6 +319,13 @@ forCallWithUUID:(nullable NSUUID *)uuid
 /// `completion` once CallKit has accepted the report — or after
 /// `pushCompletionTimeout`, whichever comes first. Failing to run the handler
 /// is what produces the `0xBAADCA11` termination and the VoIP push ban.
+///
+/// A payload whose descriptor `isCancellation` (built-in markers: `type` or
+/// `event` equal to `cancel`/`cancelled`/`cancellation` under `data` or at
+/// the top level) is never reported to CallKit as an incoming call. It takes
+/// the incoming-call screen down instead: a call whose INVITE has not arrived
+/// yet is remembered so the late INVITE is answered `603`, a call that is
+/// already up at SIP level is torn down with `CXCallEndedReasonRemoteEnded`.
 - (void)handleVoIPPushPayload:(NSDictionary *)payload
                    completion:(nullable void (^)(void))completion;
 

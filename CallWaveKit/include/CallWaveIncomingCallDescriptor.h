@@ -15,11 +15,21 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, strong, readonly) NSUUID *uuid;
 /// `nil` falls back to `CallWaveClient.defaultCallerName`.
 @property (nonatomic, copy, readonly, nullable) NSString *caller;
+/// `YES` when the payload announces that the caller hung up before anyone
+/// answered, not a new incoming call. A cancellation is never reported to
+/// CallKit as an incoming call; it ends or suppresses the call it names.
+@property (nonatomic, assign, readonly, getter=isCancellation) BOOL cancellation;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithUUID:(NSUUID *)uuid
-                      caller:(nullable NSString *)caller NS_DESIGNATED_INITIALIZER;
+                      caller:(nullable NSString *)caller;
+- (instancetype)initWithUUID:(NSUUID *)uuid
+                      caller:(nullable NSString *)caller
+                cancellation:(BOOL)cancellation NS_DESIGNATED_INITIALIZER;
 + (instancetype)descriptorWithUUID:(NSUUID *)uuid caller:(nullable NSString *)caller;
+/// The caller hung up before an answer: the incoming call screen for `uuid`
+/// must come down, and the INVITE that may still arrive must be refused.
++ (instancetype)cancellationDescriptorWithUUID:(NSUUID *)uuid;
 
 @end
 

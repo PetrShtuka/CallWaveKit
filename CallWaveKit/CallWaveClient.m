@@ -1930,6 +1930,17 @@ forCallWithUUID:(NSUUID *)uuid
     }
     NSString *resolved = caller.length > 0 ? caller : self.defaultCallerName;
     dispatchMain(^{
+        CallWaveCall *existing = [self.registry callForUUID:uuid];
+        if (existing != nil && existing.reportedToCallKit
+                && existing.state == CallWaveCallStateIncoming) {
+            // A duplicate push for a call that is already on the CallKit
+            // screen: reporting it again would re-publish `incoming`, restart
+            // the ring timeout and, in managed mode, risk a second CallKit
+            // call under the same UUID.
+            CWLogInfo(CallWaveLogCategoryPush,
+                      @"duplicate push for call %@; already reported", uuid.UUIDString);
+            return;
+        }
         CallWaveCall *call = [self.registry registerCallWithUUID:uuid];
         call.caller = resolved;
         call.displayName = [self displayNameForCaller:resolved];
@@ -2367,8 +2378,28 @@ forCallWithUUID:(NSUUID *)uuid
     NSString *uuidString = data[@"uuid"] ?: payload[@"uuid"];
     NSUUID *uuid = uuidString.length > 0 ? [[NSUUID alloc] initWithUUIDString:uuidString] : nil;
     NSString *caller = data[@"callerID"] ?: data[@"caller"] ?: payload[@"caller_id"];
+    if ([self payloadAnnouncesCancellation:payload data:data]) {
+        // The caller hung up before anyone answered; `caller` is irrelevant
+        // because nothing is ever shown for a cancellation.
+        return [CallWaveIncomingCallDescriptor cancellationDescriptorWithUUID:uuid ?: [NSUUID UUID]];
+    }
     return [CallWaveIncomingCallDescriptor descriptorWithUUID:uuid ?: [NSUUID UUID]
                                                        caller:caller];
+}
+
+/// The built-in cancellation marker: `type` (or `event`) equal to `cancel`,
+/// `cancelled` or `cancellation`, read from `data` first and the top level
+/// second. Hosts with a different marker shape set `pushPayloadParser` and
+/// return a descriptor whose `cancellation` flag is set.
+- (BOOL)payloadAnnouncesCancellation:(NSDictionary *)payload data:(nullable NSDictionary *)data {
+    NSString *type = data[@"type"] ?: data[@"event"] ?: payload[@"type"] ?: payload[@"event"];
+    if (![type isKindOfClass:NSString.class]) {
+        return NO;
+    }
+    NSString *normalized = type.lowercaseString;
+    return [normalized isEqualToString:@"cancel"]
+        || [normalized isEqualToString:@"cancelled"]
+        || [normalized isEqualToString:@"cancellation"];
 }
 
 - (void)handleVoIPPushPayload:(NSDictionary *)payload
@@ -2398,6 +2429,16 @@ forCallWithUUID:(NSUUID *)uuid
             acknowledge(@"deadline");
         });
 
+        if (descriptor.isCancellation) {
+            // A cancellation is not an incoming call: reporting it to CallKit
+            // would flash an incoming-call screen for a call that no longer
+            // exists. It only ends or suppresses the call it names, and the
+            // push is acknowledged immediately — nothing is awaited.
+            [self handleCancelledIncomingCallWithUUID:descriptor.uuid];
+            acknowledge(@"cancellation push");
+            return;
+        }
+
         [self reportIncomingCallWithUUID:descriptor.uuid
                                   caller:descriptor.caller
                               completion:^(NSError *error) {
@@ -2407,6 +2448,56 @@ forCallWithUUID:(NSUUID *)uuid
         }];
         [self wakeRegistration];
     });
+}
+
+/// The remote side cancelled a call it had announced. Mirrors the user's own
+/// decline: when the INVITE has not arrived yet the cancellation is remembered
+/// so the late INVITE is answered `603`, and when the call is already up at
+/// SIP level it is torn down. The CallKit screen comes down either way.
+/// Must run on the main queue.
+- (void)handleCancelledIncomingCallWithUUID:(NSUUID *)uuid {
+    CallWaveCall *call = [self.registry callForUUID:uuid];
+    if (call == nil) {
+        CWLogInfo(CallWaveLogCategoryPush,
+                  @"cancellation push for unknown call %@; nothing to end",
+                  uuid.UUIDString);
+        return;
+    }
+
+    pjsua_call_id callId = call.callId;
+    BOOL ringing = call.state == CallWaveCallStateIncoming;
+    if (callId != CallWaveSIPCallIdInvalid) {
+        // The INVITE already arrived, so there is a real SIP dialog to close.
+        [self performSIPAsync:^{
+            if (ringing) {
+                // Still early media: reject; the caller already hangs up, but
+                // the final response keeps the dialog from lingering.
+                [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE];
+            } else {
+                [self hangupSIPCall:callId];
+            }
+        }];
+        [self reportCallEndedWithUUID:uuid reason:CXCallEndedReasonRemoteEnded];
+        [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
+        [self clearCallWithUUID:uuid];
+        return;
+    }
+
+    if ([self.registry markCallCancelledBeforeInvite:uuid]) {
+        CWLogInfo(CallWaveLogCategoryPush,
+                  @"call %@ cancelled before its INVITE arrived; the INVITE will be refused",
+                  uuid.UUIDString);
+        [self reportCallEndedWithUUID:uuid reason:CXCallEndedReasonRemoteEnded];
+        [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
+        // The record is kept: `takeCallCancelledBeforeInvite` needs it when the
+        // late INVITE lands.
+        [self detachCurrentCallIfItIs:uuid];
+        return;
+    }
+
+    CWLogInfo(CallWaveLogCategoryPush,
+              @"cancellation push for call %@ in state %ld; nothing to do",
+              uuid.UUIDString, (long)call.state);
 }
 
 - (void)pushRegistry:(PKPushRegistry *)registry
