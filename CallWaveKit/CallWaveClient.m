@@ -2198,6 +2198,15 @@ forCallWithUUID:(NSUUID *)uuid
         if (call.isCancelledBeforeInvite) {
             return;
         }
+        if (call.reportedToCallKit && call.state == CallWaveCallStateIncoming) {
+            // A duplicate push for a call that is already on the CallKit
+            // screen: reporting it again would re-publish `incoming`, restart
+            // the ring timeout and, in managed mode, risk a second CallKit
+            // call under the same UUID.
+            CWLogInfo(CallWaveLogCategoryPush,
+                      @"duplicate push for call %@; already reported", uuid.UUIDString);
+            return;
+        }
         call.caller = resolved;
         call.displayName = [self displayNameForCaller:resolved];
         call.reportedToCallKit = YES;
@@ -2689,8 +2698,28 @@ forCallWithUUID:(NSUUID *)uuid
     NSString *uuidString = data[@"uuid"] ?: payload[@"uuid"];
     NSUUID *uuid = uuidString.length > 0 ? [[NSUUID alloc] initWithUUIDString:uuidString] : nil;
     NSString *caller = data[@"callerID"] ?: data[@"caller"] ?: payload[@"caller_id"];
+    if ([self payloadAnnouncesCancellation:payload data:data]) {
+        // The caller hung up before anyone answered; `caller` is irrelevant
+        // because nothing is ever shown for a cancellation.
+        return [CallWaveIncomingCallDescriptor cancellationDescriptorWithUUID:uuid ?: [NSUUID UUID]];
+    }
     return [CallWaveIncomingCallDescriptor descriptorWithUUID:uuid ?: [NSUUID UUID]
                                                        caller:caller];
+}
+
+/// The built-in cancellation marker: `type` (or `event`) equal to `cancel`,
+/// `cancelled` or `cancellation`, read from `data` first and the top level
+/// second. Hosts with a different marker shape set `pushPayloadParser` and
+/// return a descriptor whose `cancellation` flag is set.
+- (BOOL)payloadAnnouncesCancellation:(NSDictionary *)payload data:(nullable NSDictionary *)data {
+    NSString *type = data[@"type"] ?: data[@"event"] ?: payload[@"type"] ?: payload[@"event"];
+    if (![type isKindOfClass:NSString.class]) {
+        return NO;
+    }
+    NSString *normalized = type.lowercaseString;
+    return [normalized isEqualToString:@"cancel"]
+        || [normalized isEqualToString:@"cancelled"]
+        || [normalized isEqualToString:@"cancellation"];
 }
 
 - (void)handleVoIPPushPayload:(NSDictionary *)payload
@@ -2716,6 +2745,23 @@ forCallWithUUID:(NSUUID *)uuid
                        dispatch_get_main_queue(), ^{
             acknowledge(@"deadline");
         });
+
+        if (descriptor.isCancellation) {
+            // A cancellation is not an incoming call: reporting it to CallKit
+            // would flash an incoming-call screen for a call that no longer
+            // exists. It ends or suppresses the call it names instead —
+            // including the tombstone case, where the cancellation overtook
+            // the announcement push.
+            [self handleCancelledIncomingCallWithUUID:descriptor.uuid
+                                               reason:CXCallEndedReasonRemoteEnded
+                                           completion:^(NSError *error) {
+                dispatchMain(^{
+                    acknowledge(error == nil ? @"cancellation handled"
+                                             : @"cancellation handling failed");
+                });
+            }];
+            return;
+        }
 
         [self reportIncomingCallWithUUID:descriptor.uuid
                                   caller:descriptor.caller
