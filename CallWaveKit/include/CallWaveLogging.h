@@ -28,9 +28,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (class, nonatomic, weak, nullable) id<CallWaveLogger> logger;
 
 /// When YES — the default — SIP URIs, caller identifiers, DTMF digits and
-/// registrar hosts are replaced with `<private>` before a message is formatted.
-/// Turn it off only in a build you control, never in a shipped application: the
-/// PJSIP trace at `CallWaveLogLevelDebug` contains `Authorization` headers.
+/// registrar hosts are replaced with `<private>` before a message is formatted,
+/// and `Authorization`/`Proxy-Authorization` values in the PJSIP trace are
+/// scrubbed. Turn it off only in a build you control, never in a shipped
+/// application: with redaction disabled the debug trace is fully raw.
 @property (class, nonatomic, assign, getter=isRedactingIdentifiers) BOOL redactsIdentifiers;
 
 /// `value` itself, or `@"<private>"` when redaction is on. Use this for every

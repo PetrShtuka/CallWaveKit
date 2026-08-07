@@ -2896,5 +2896,8 @@ static void onPJLog(int level, const char *data, int length) {
     if (message == nil) {
         return;
     }
+    // The trace dumps whole SIP messages; digest responses must not reach the
+    // log even at debug level unless redaction was deliberately disabled.
+    message = [CallWaveLog scrubAuthorizationInMessage:message];
     [CallWaveLog logLevel:mapped category:CallWaveLogCategoryPJSIP format:@"%@", message];
 }
