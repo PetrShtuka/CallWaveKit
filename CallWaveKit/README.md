@@ -335,8 +335,9 @@ CallWaveLog.logger = myLogSink           // CallWaveLogger
 CallWaveLog.redactsIdentifiers = true    // the default
 ```
 
-`CallWaveLogLevelDebug` turns on the PJSIP protocol trace, which contains whole
-SIP messages including `Authorization` headers. It must not ship in a release
+`CallWaveLogLevelDebug` turns on the PJSIP protocol trace, which dumps whole
+SIP messages. `Authorization` and `Proxy-Authorization` values are scrubbed
+while `redactsIdentifiers` is on; the level still must not ship in a release
 build.
 
 ## Swift concurrency

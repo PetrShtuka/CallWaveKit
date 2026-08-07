@@ -94,8 +94,9 @@ typedef NS_ENUM(NSInteger, CallWaveLogLevel) {
     CallWaveLogLevelError,
     CallWaveLogLevelWarning,
     CallWaveLogLevelInfo,
-    /// Includes the PJSIP protocol trace. SIP messages carry `Authorization`
-    /// headers, so this level must not ship in a release build.
+    /// Includes the PJSIP protocol trace. `Authorization` header values are
+    /// scrubbed while `CallWaveLog.redactsIdentifiers` is on, but this level
+    /// still dumps whole SIP messages, so it must not ship in a release build.
     CallWaveLogLevelDebug,
 };
 

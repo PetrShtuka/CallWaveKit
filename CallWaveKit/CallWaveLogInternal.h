@@ -14,6 +14,12 @@
 
 #define CWRedact(cwValue) [CallWaveLog redact:(cwValue)]
 
+@interface CallWaveLog (CredentialScrubbing)
+/// Scrubs `Authorization:`/`Proxy-Authorization:` values from a PJSIP trace
+/// message. Internal: applied by the PJSIP log sink before forwarding.
++ (NSString *)scrubAuthorizationInMessage:(NSString *)message;
+@end
+
 // Macros rather than file-static constants so a translation unit that uses only
 // some of them does not warn about the rest.
 #define CallWaveLogCategorySIP     @"sip"
