@@ -99,6 +99,21 @@ typedef NS_ENUM(NSInteger, CallWaveLogLevel) {
     CallWaveLogLevelDebug,
 };
 
+/// Why a `CallWaveEventTypeCallQualityWarning` fired. Thresholds live on
+/// `CallWaveEngineConfiguration`.
+typedef NS_ENUM(NSInteger, CallWaveCallQualityWarning) {
+    /// Inbound packet loss crossed `qualityWarningPacketLossThreshold`.
+    CallWaveCallQualityWarningPacketLoss = 1,
+    /// Mean inbound jitter crossed `qualityWarningJitterThreshold`.
+    CallWaveCallQualityWarningHighJitter,
+    /// Mean round-trip time crossed `qualityWarningRoundTripTimeThreshold`.
+    CallWaveCallQualityWarningHighRoundTripTime,
+    /// The call is connected but not a single inbound RTP packet arrived
+    /// within `noMediaTimeout` — the classic "the intercom answered with
+    /// silence" failure.
+    CallWaveCallQualityWarningNoMedia,
+};
+
 /// Which of the two process-global iOS singletons the client is allowed to own.
 ///
 /// A host that already runs its own `CXProvider` (branded icon, localized name)

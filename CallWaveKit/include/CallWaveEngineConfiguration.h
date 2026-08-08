@@ -66,7 +66,44 @@ NS_ASSUME_NONNULL_BEGIN
 /// Interval for `CallWaveEventTypeCallStatisticsUpdated`, in seconds. `0` —
 /// the default — disables periodic sampling. Values below one second are
 /// clamped to one to avoid wasting battery.
+///
+/// Quality warnings and the no-media watchdog share this sampler. When this
+/// interval is `0` but either of them is enabled, the sampler still runs
+/// internally once per second during an active call — it just does not emit
+/// `…CallStatisticsUpdated`.
 @property (nonatomic, assign) NSTimeInterval statisticsUpdateInterval;
+
+/// Fires `CallWaveEventTypeCallQualityWarning` when inbound loss, jitter or
+/// RTT cross the thresholds below. Each warning fires at most once per call.
+/// Defaults to YES.
+@property (nonatomic, assign) BOOL qualityWarningsEnabled;
+
+/// Inbound loss fraction that raises `CallWaveCallQualityWarningPacketLoss`.
+/// Defaults to `0.05` (5 %). Negative values are clamped to `0`.
+@property (nonatomic, assign) double qualityWarningPacketLossThreshold;
+
+/// Mean inbound jitter, in seconds, that raises
+/// `CallWaveCallQualityWarningHighJitter`. Defaults to `0.03` (30 ms).
+@property (nonatomic, assign) NSTimeInterval qualityWarningJitterThreshold;
+
+/// Mean round-trip time, in seconds, that raises
+/// `CallWaveCallQualityWarningHighRoundTripTime`. Defaults to `0.3` (300 ms).
+@property (nonatomic, assign) NSTimeInterval qualityWarningRoundTripTimeThreshold;
+
+/// Connected seconds without a single inbound RTP packet before
+/// `CallWaveCallQualityWarningNoMedia` fires. `0` disables the watchdog.
+/// Defaults to `5`.
+@property (nonatomic, assign) NSTimeInterval noMediaTimeout;
+
+/// Ends the call through the normal hang-up path when the no-media watchdog
+/// fires. Defaults to NO — the host decides whether a silent call is worth
+/// killing automatically.
+@property (nonatomic, assign) BOOL terminatesCallOnNoMedia;
+
+/// Tags SIP and RTP sockets as voice traffic so routers and iOS itself can
+/// prioritise them (DiffServ/service-type tagging, in the spirit of WebRTC
+/// SDKs). Defaults to YES.
+@property (nonatomic, assign, getter=isQoSTaggingEnabled) BOOL QoSTaggingEnabled;
 
 + (instancetype)defaultConfiguration NS_SWIFT_NAME(defaultConfiguration());
 
