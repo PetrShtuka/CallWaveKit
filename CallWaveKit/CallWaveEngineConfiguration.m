@@ -17,6 +17,13 @@
         _voiceActivityDetectionEnabled = NO;
         _handlesNetworkChanges = YES;
         _statisticsUpdateInterval = 0;
+        _qualityWarningsEnabled = YES;
+        _qualityWarningPacketLossThreshold = 0.05;
+        _qualityWarningJitterThreshold = 0.03;
+        _qualityWarningRoundTripTimeThreshold = 0.3;
+        _noMediaTimeout = 5.0;
+        _terminatesCallOnNoMedia = NO;
+        _QoSTaggingEnabled = YES;
     }
     return self;
 }
@@ -50,6 +57,22 @@
         : MAX(statisticsUpdateInterval, 1.0);
 }
 
+- (void)setQualityWarningPacketLossThreshold:(double)threshold {
+    _qualityWarningPacketLossThreshold = MAX(threshold, 0.0);
+}
+
+- (void)setQualityWarningJitterThreshold:(NSTimeInterval)threshold {
+    _qualityWarningJitterThreshold = MAX(threshold, 0.0);
+}
+
+- (void)setQualityWarningRoundTripTimeThreshold:(NSTimeInterval)threshold {
+    _qualityWarningRoundTripTimeThreshold = MAX(threshold, 0.0);
+}
+
+- (void)setNoMediaTimeout:(NSTimeInterval)noMediaTimeout {
+    _noMediaTimeout = MAX(noMediaTimeout, 0.0);
+}
+
 - (id)copyWithZone:(NSZone *)zone {
     CallWaveEngineConfiguration *copy = [[CallWaveEngineConfiguration allocWithZone:zone] init];
     copy.maximumCalls = self.maximumCalls;
@@ -65,6 +88,13 @@
     copy.voiceActivityDetectionEnabled = self.voiceActivityDetectionEnabled;
     copy.handlesNetworkChanges = self.handlesNetworkChanges;
     copy.statisticsUpdateInterval = self.statisticsUpdateInterval;
+    copy.qualityWarningsEnabled = self.qualityWarningsEnabled;
+    copy.qualityWarningPacketLossThreshold = self.qualityWarningPacketLossThreshold;
+    copy.qualityWarningJitterThreshold = self.qualityWarningJitterThreshold;
+    copy.qualityWarningRoundTripTimeThreshold = self.qualityWarningRoundTripTimeThreshold;
+    copy.noMediaTimeout = self.noMediaTimeout;
+    copy.terminatesCallOnNoMedia = self.terminatesCallOnNoMedia;
+    copy.QoSTaggingEnabled = self.QoSTaggingEnabled;
     return copy;
 }
 

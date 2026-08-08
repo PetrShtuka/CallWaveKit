@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readwrite, nullable) CallWaveAudioRoute *audioRoute;
 @property (nonatomic, assign, readwrite, getter=isAudioSessionInterrupted) BOOL audioSessionInterrupted;
 @property (nonatomic, strong, readwrite, nullable) CallWaveCallStatistics *callStatistics;
+@property (nonatomic, assign, readwrite) CallWaveCallQualityWarning qualityWarning;
 @property (nonatomic, assign, readwrite) CXCallEndedReason endedReason;
 @property (nonatomic, strong, readwrite, nullable) NSError *error;
 

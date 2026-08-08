@@ -1,6 +1,7 @@
 #import "CallWaveClient.h"
 
 #import "CallWaveCallRegistry.h"
+#import "CallWaveCallQualityInternal.h"
 #import "CallWaveCallStatisticsInternal.h"
 #import "CallWaveError.h"
 #import "CallWaveEventInternal.h"
@@ -226,6 +227,9 @@ static void dispatchMain(dispatch_block_t block) {
 @property (nonatomic, copy) NSString *networkPathSummary;
 @property (nonatomic, assign) NSInteger lastRegistrationSIPStatusCode;
 @property (nonatomic, assign) BOOL statisticsSamplingScheduled;
+/// Per-call latch of already-fired `CallWaveCallQualityWarningMask` bits, so a
+/// threshold crossing is reported once per call instead of once per sample.
+@property (nonatomic, strong) NSMutableDictionary<NSUUID *, NSNumber *> *callQualityWarningLatches;
 
 // Visible to the PJSUA C callbacks at the bottom of this file, which sit
 // outside the @implementation and therefore need a declared interface.
@@ -276,6 +280,7 @@ static void dispatchMain(dispatch_block_t block) {
         _integrationOptions = options;
         _registry = [[CallWaveCallRegistry alloc] init];
         _eventObservers = [NSMutableDictionary dictionary];
+        _callQualityWarningLatches = [NSMutableDictionary dictionary];
         _registrationState = CallWaveRegistrationStateStopped;
         _callState = CallWaveCallStateIdle;
         _defaultCallerName = CallWaveFallbackCallerName;
@@ -690,6 +695,12 @@ static void dispatchMain(dispatch_block_t block) {
     pjsua_transport_config config;
     pjsua_transport_config_default(&config);
     config.port = 0;
+    if (self.engineConfiguration.isQoSTaggingEnabled) {
+        // Voice service-type tagging lets iOS and the network prioritise SIP
+        // signalling; TLS reads its tag from tls_setting instead.
+        config.qos_type = PJ_QOS_TYPE_VOICE;
+        config.tls_setting.qos_type = PJ_QOS_TYPE_VOICE;
+    }
     if (transport == CallWaveTransportTLS) {
         config.tls_setting.method = PJSIP_TLSV1_2_METHOD;
         config.tls_setting.verify_server =
@@ -763,6 +774,9 @@ static void dispatchMain(dispatch_block_t block) {
     // SRTP over plain UDP signalling is what an intercom on a LAN offers; do
     // not additionally demand a secure signalling path.
     account.srtp_secure_signaling = 0;
+    if (self.engineConfiguration.isQoSTaggingEnabled) {
+        account.rtp_cfg.qos_type = PJ_QOS_TYPE_VOICE;
+    }
 
     switch (self.engineConfiguration.IPVersionPolicy) {
         case CallWaveIPVersionPolicyIPv4Only:
@@ -1263,6 +1277,7 @@ static void dispatchMain(dispatch_block_t block) {
         return;
     }
     [self.registry removeCallWithUUID:uuid];
+    [self.callQualityWarningLatches removeObjectForKey:uuid];
     [self detachCurrentCallIfItIs:uuid];
 }
 
@@ -1782,11 +1797,25 @@ forCallWithUUID:(NSUUID *)uuid
             callStatistics:statistics];
 }
 
+/// The sampler doubles as the quality-monitor ticker: with periodic events
+/// disabled it still ticks once a second while warnings or the no-media
+/// watchdog are on, it just does not emit `…CallStatisticsUpdated`.
+- (NSTimeInterval)effectiveStatisticsSamplingInterval {
+    NSTimeInterval configured = self.engineConfiguration.statisticsUpdateInterval;
+    if (configured > 0) {
+        return configured;
+    }
+    BOOL monitoring = self.engineConfiguration.qualityWarningsEnabled ||
+                      self.engineConfiguration.noMediaTimeout > 0;
+    return monitoring ? 1.0 : 0;
+}
+
 - (void)scheduleStatisticsSamplingIfNeeded {
-    NSTimeInterval interval = self.engineConfiguration.statisticsUpdateInterval;
+    NSTimeInterval interval = [self effectiveStatisticsSamplingInterval];
     if (interval <= 0 || self.statisticsSamplingScheduled) {
         return;
     }
+    BOOL emitsPeriodicEvents = self.engineConfiguration.statisticsUpdateInterval > 0;
     self.statisticsSamplingScheduled = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -1799,18 +1828,67 @@ forCallWithUUID:(NSUUID *)uuid
             }
             hasLiveCall = YES;
             CallWaveCallStatistics *statistics = [self statisticsForCallWithUUID:uuid];
-            if (statistics != nil) {
+            if (statistics == nil) {
+                continue;
+            }
+            if (emitsPeriodicEvents) {
                 CallWaveEvent *event =
                     [CallWaveEvent eventWithType:CallWaveEventTypeCallStatisticsUpdated];
                 event.callUUID = uuid;
                 event.callStatistics = statistics;
                 [self emitEvent:event];
             }
+            [self evaluateCallQualityForUUID:uuid statistics:statistics];
         }
         if (hasLiveCall) {
             [self scheduleStatisticsSamplingIfNeeded];
         }
     });
+}
+
+/// Fires freshly-crossed quality warnings for the call and, when configured,
+/// ends a call whose media never arrived. Must run on the main queue.
+- (void)evaluateCallQualityForUUID:(NSUUID *)uuid
+                        statistics:(CallWaveCallStatistics *)statistics {
+    CallWaveCallQualityWarningMask mask =
+        CallWaveEvaluateCallQuality(statistics, self.engineConfiguration);
+    NSUInteger latched = self.callQualityWarningLatches[uuid].unsignedIntegerValue;
+    NSUInteger fresh = mask & ~latched;
+    if (fresh == 0) {
+        return;
+    }
+    self.callQualityWarningLatches[uuid] = @(latched | mask);
+
+    static const CallWaveCallQualityWarningMask bits[] = {
+        CallWaveCallQualityWarningMaskPacketLoss,
+        CallWaveCallQualityWarningMaskJitter,
+        CallWaveCallQualityWarningMaskRoundTripTime,
+        CallWaveCallQualityWarningMaskNoMedia,
+    };
+    for (NSUInteger index = 0; index < sizeof(bits) / sizeof(bits[0]); index++) {
+        if ((fresh & bits[index]) == 0) {
+            continue;
+        }
+        CallWaveCallQualityWarning warning =
+            CallWaveCallQualityWarningForMaskBit(bits[index]);
+        CWLogWarning(CallWaveLogCategoryCall,
+                     @"call %@ quality warning %ld: %@",
+                     uuid.UUIDString, (long)warning, statistics);
+        CallWaveEvent *event =
+            [CallWaveEvent eventWithType:CallWaveEventTypeCallQualityWarning];
+        event.callUUID = uuid;
+        event.qualityWarning = warning;
+        event.callStatistics = statistics;
+        [self emitEvent:event];
+    }
+
+    if ((fresh & CallWaveCallQualityWarningMaskNoMedia) != 0 &&
+        self.engineConfiguration.terminatesCallOnNoMedia) {
+        CWLogWarning(CallWaveLogCategoryCall,
+                     @"call %@ ended: no inbound media within %.0fs",
+                     uuid.UUIDString, self.engineConfiguration.noMediaTimeout);
+        [self endCallWithUUID:uuid completion:nil];
+    }
 }
 
 + (NSString *)displayNameForCaller:(NSString *)caller {

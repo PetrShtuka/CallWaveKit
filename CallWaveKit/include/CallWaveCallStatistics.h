@@ -33,6 +33,11 @@ NS_SWIFT_SENDABLE
 /// Mean round-trip time from RTCP, or `0` when the peer sends no reports.
 @property (nonatomic, assign, readonly) NSTimeInterval roundTripTime;
 
+/// Simplified E-model estimate of listening quality, from `1.0` (bad) to
+/// `4.5` (excellent), derived from inbound loss, jitter and round-trip time.
+/// `0` means "unknown": no media has flowed yet.
+@property (nonatomic, assign, readonly) double estimatedMOS;
+
 /// Negotiated encoding, e.g. `PCMA`. `nil` before the media starts.
 @property (nonatomic, copy, readonly, nullable) NSString *codec;
 @property (nonatomic, assign, readonly) NSUInteger clockRate;
