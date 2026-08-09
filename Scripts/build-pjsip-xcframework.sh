@@ -3,6 +3,7 @@
 set -euo pipefail
 
 PJSIP_VERSION="${PJSIP_VERSION:-2.17}"
+OPUS_VERSION="${OPUS_VERSION:-1.5.2}"
 MIN_IOS_VERSION="${MIN_IOS_VERSION:-15.0}"
 BUILD_JOBS="${BUILD_JOBS:-8}"
 
@@ -12,32 +13,111 @@ OUTPUT_PATH="$PROJECT_ROOT/Vendor/PJSIP.xcframework"
 LICENSE_PATH="$PROJECT_ROOT/Vendor/PJSIP-COPYING"
 THIRD_PARTY_LICENSES_PATH="$PROJECT_ROOT/Vendor/ThirdPartyLicenses"
 BUILD_MANIFEST_PATH="$PROJECT_ROOT/Vendor/PJSIP-BUILD.txt"
-WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/callwave-pjsip.XXXXXX")"
+
+# A full three-slice build outlasts a single CI step, so the work directory can
+# be pinned from outside: completed stages carry `.callwave-built` stamps and a
+# re-run picks up where the previous one stopped.
+if [[ -n "${PJSIP_WORK_ROOT:-}" ]]; then
+  WORK_ROOT="$PJSIP_WORK_ROOT"
+  OWNS_WORK_ROOT=0
+else
+  WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/callwave-pjsip.XXXXXX")"
+  OWNS_WORK_ROOT=1
+fi
 
 cleanup() {
-  rm -rf "$WORK_ROOT"
+  if [[ "$OWNS_WORK_ROOT" == "1" ]]; then
+    rm -rf "$WORK_ROOT"
+  fi
 }
 trap cleanup EXIT
 
 SOURCE_ROOT="$WORK_ROOT/pjproject"
 BUILD_ROOT="$WORK_ROOT/build"
 ARTIFACT_ROOT="$WORK_ROOT/artifacts"
+OPUS_TARBALL="$WORK_ROOT/opus-$OPUS_VERSION.tar.gz"
+OPUS_URL="https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz"
 
-git clone --depth 1 --branch "$PJSIP_VERSION" \
-  https://github.com/pjsip/pjproject.git "$SOURCE_ROOT"
+if [[ ! -d "$SOURCE_ROOT" ]]; then
+  git clone --depth 1 --branch "$PJSIP_VERSION" \
+    https://github.com/pjsip/pjproject.git "$SOURCE_ROOT"
+fi
 SOURCE_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+
+# SHA-256 digest authentication without OpenSSL: Apple-TLS builds compile
+# sip_auth_client.c in its no-OpenSSL mode, which upstream restricts to MD5.
+if [[ ! -f "$SOURCE_ROOT/.callwave-patched" ]]; then
+  cp "$PROJECT_ROOT/Patches/callwave-sha256.h" \
+    "$SOURCE_ROOT/pjsip/src/pjsip/callwave_sha256.h"
+  git -C "$SOURCE_ROOT" apply \
+    "$PROJECT_ROOT/Patches/sip-auth-client-sha256.patch"
+  touch "$SOURCE_ROOT/.callwave-patched"
+fi
+
+fetch_opus() {
+  if [[ ! -f "$OPUS_TARBALL" ]]; then
+    curl -fL --retry 3 -o "$OPUS_TARBALL" "$OPUS_URL"
+  fi
+}
+
+# Opus is a static-only cross build per slice; pjproject picks it up through
+# --with-opus pointing at this prefix.
+build_opus_slice() {
+  local name="$1"
+  local sdk="$2"
+  local arch="$3"
+  local minimum_flag="$4"
+  local host="$5"
+  local prefix="$BUILD_ROOT/opus-$name"
+  local source_dir="$BUILD_ROOT/opus-src-$name"
+  local sdk_path
+
+  if [[ -f "$prefix/.callwave-built" ]]; then
+    return
+  fi
+  fetch_opus
+  sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path)"
+
+  rm -rf "$source_dir"
+  mkdir -p "$source_dir" "$prefix"
+  tar -xzf "$OPUS_TARBALL" -C "$source_dir" --strip-components 1
+
+  (
+    cd "$source_dir"
+    CC="$(xcrun --sdk "$sdk" -f clang)" \
+    AR="$(xcrun --sdk "$sdk" -f ar)" \
+    RANLIB="$(xcrun --sdk "$sdk" -f ranlib)" \
+    CFLAGS="-O2 -arch $arch -isysroot $sdk_path $minimum_flag" \
+    LDFLAGS="-arch $arch -isysroot $sdk_path $minimum_flag" \
+      ./configure \
+        --host="$host" \
+        --prefix="$prefix" \
+        --disable-shared \
+        --enable-static \
+        --disable-doc \
+        --disable-extra-programs
+    make -j"$BUILD_JOBS"
+    make install
+  )
+  touch "$prefix/.callwave-built"
+}
 
 build_slice() {
   local name="$1"
   local sdk="$2"
   local arch="$3"
   local minimum_flag="$4"
+  local opus_prefix="$BUILD_ROOT/opus-$name"
   local slice_root="$BUILD_ROOT/$name"
   local sdk_path
   local platform_path
 
+  if [[ -f "$slice_root/.callwave-built" ]]; then
+    return
+  fi
   sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path)"
   platform_path="$(xcrun --sdk "$sdk" --show-sdk-platform-path)"
+  rm -rf "$slice_root"
   cp -R "$SOURCE_ROOT" "$slice_root"
 
   cat > "$slice_root/pjlib/include/pj/config_site.h" <<'CONFIG_SITE'
@@ -63,8 +143,8 @@ CONFIG_SITE
     CFLAGS="-O2" \
     LDFLAGS="-O2 -framework Network -framework Security" \
       ./configure-iphone \
+        --with-opus="$opus_prefix" \
         --disable-video \
-        --disable-opus \
         --disable-openh264 \
         --disable-ffmpeg \
         --disable-v4l2 \
@@ -73,17 +153,21 @@ CONFIG_SITE
     grep -q '^#define PJ_HAS_SSL_SOCK 1' pjlib/include/pj/config_site.h
     grep -q '^#define PJ_SSL_SOCK_IMP PJ_SSL_SOCK_IMP_APPLE' \
       pjlib/include/pj/config_site.h
+    grep -q '^#define PJMEDIA_HAS_OPUS_CODEC 1' \
+      pjmedia/include/pjmedia-codec/config_auto.h
     for directory in pjlib/build pjlib-util/build pjnath/build third_party/build pjmedia/build pjsip/build; do
       make -C "$directory" dep
     done
     make -j"$BUILD_JOBS" lib
   )
+  touch "$slice_root/.callwave-built"
 }
 
 combine_slice() {
   local source_root="$1"
-  local suffix="$2"
-  local output="$3"
+  local opus_prefix="$2"
+  local suffix="$3"
+  local output="$4"
 
   mkdir -p "$(dirname "$output")"
   xcrun libtool -static -o "$output" \
@@ -103,7 +187,8 @@ combine_slice() {
     "$source_root/third_party/lib/libspeex-$suffix.a" \
     "$source_root/third_party/lib/libsrtp-$suffix.a" \
     "$source_root/third_party/lib/libwebrtc-$suffix.a" \
-    "$source_root/pjlib/lib/libpj-$suffix.a"
+    "$source_root/pjlib/lib/libpj-$suffix.a" \
+    "$opus_prefix/lib/libopus.a"
 }
 
 copy_headers() {
@@ -128,6 +213,13 @@ MODULE_MAP
 
 mkdir -p "$BUILD_ROOT" "$ARTIFACT_ROOT"
 
+build_opus_slice device-arm64 iphoneos arm64 \
+  "-miphoneos-version-min=$MIN_IOS_VERSION" aarch64-apple-darwin
+build_opus_slice simulator-arm64 iphonesimulator arm64 \
+  "-mios-simulator-version-min=$MIN_IOS_VERSION" aarch64-apple-darwin
+build_opus_slice simulator-x86_64 iphonesimulator x86_64 \
+  "-mios-simulator-version-min=$MIN_IOS_VERSION" x86_64-apple-darwin
+
 build_slice device-arm64 iphoneos arm64 \
   "-miphoneos-version-min=$MIN_IOS_VERSION"
 build_slice simulator-arm64 iphonesimulator arm64 \
@@ -135,11 +227,14 @@ build_slice simulator-arm64 iphonesimulator arm64 \
 build_slice simulator-x86_64 iphonesimulator x86_64 \
   "-mios-simulator-version-min=$MIN_IOS_VERSION"
 
-combine_slice "$BUILD_ROOT/device-arm64" aarch64-apple-darwin_ios \
+combine_slice "$BUILD_ROOT/device-arm64" "$BUILD_ROOT/opus-device-arm64" \
+  aarch64-apple-darwin_ios \
   "$ARTIFACT_ROOT/device/libPJSIP.a"
-combine_slice "$BUILD_ROOT/simulator-arm64" aarch64-apple-darwin_ios \
+combine_slice "$BUILD_ROOT/simulator-arm64" "$BUILD_ROOT/opus-simulator-arm64" \
+  aarch64-apple-darwin_ios \
   "$ARTIFACT_ROOT/simulator-arm64/libPJSIP.a"
-combine_slice "$BUILD_ROOT/simulator-x86_64" x86_64-apple-darwin_ios \
+combine_slice "$BUILD_ROOT/simulator-x86_64" "$BUILD_ROOT/opus-simulator-x86_64" \
+  x86_64-apple-darwin_ios \
   "$ARTIFACT_ROOT/simulator-x86_64/libPJSIP.a"
 
 mkdir -p "$ARTIFACT_ROOT/simulator"
@@ -182,15 +277,21 @@ cp "$SOURCE_ROOT/third_party/webrtc/LICENSE" \
   "$THIRD_PARTY_LICENSES_PATH/WEBRTC-LICENSE"
 cp "$SOURCE_ROOT/third_party/webrtc/LICENSE_THIRD_PARTY" \
   "$THIRD_PARTY_LICENSES_PATH/WEBRTC-LICENSE-THIRD-PARTY"
+cp "$BUILD_ROOT/opus-src-device-arm64/COPYING" \
+  "$THIRD_PARTY_LICENSES_PATH/OPUS-COPYING"
+cp "$PROJECT_ROOT/Patches/callwave-sha256.h" \
+  "$THIRD_PARTY_LICENSES_PATH/CALLWAVE-SHA256-SOURCE.txt"
 
 cat > "$BUILD_MANIFEST_PATH" <<BUILD_MANIFEST
 PJSIP version: $PJSIP_VERSION
 PJSIP commit: $SOURCE_COMMIT
+PJSIP patches: Patches/sip-auth-client-sha256.patch (SHA-256 digest without OpenSSL)
+Opus version: $OPUS_VERSION
 Minimum iOS: $MIN_IOS_VERSION
 Architectures: iphoneos/arm64, iphonesimulator/arm64+x86_64
 TLS: PJ_SSL_SOCK_IMP_APPLE (Network.framework), certificate verification enabled by CallWaveKit
 IP: IPv4 and IPv6 enabled; CallWaveKit controls account policy and NAT64
-Disabled: video, Opus, OpenH264, FFmpeg, V4L2, libyuv, G.722.1
+Disabled: video, OpenH264, FFmpeg, V4L2, libyuv, G.722.1
 Generated by: Scripts/build-pjsip-xcframework.sh
 BUILD_MANIFEST
 

@@ -8,6 +8,11 @@ bump may contain breaking changes, and each one is listed below.
 
 ### Added
 
+- Opus 1.5.2 is linked statically into every PJSIP slice, so
+  `preferredCodecs` can now include `opus/48000/2` for wideband calls.
+- SIP digest authentication with SHA-256 (RFC 8760) next to MD5, through a
+  `pjproject` patch kept in `Patches/`. Servers that challenge with
+  `algorithm=SHA-256` no longer fail registration.
 - `CallWaveEventTypeCallQualityWarning` with `CallWaveCallQualityWarning`
   reasons (packet loss, high jitter, high round-trip time, no media). Each
   warning fires at most once per call and carries the statistics snapshot that
@@ -19,6 +24,14 @@ bump may contain breaking changes, and each one is listed below.
   controlled by `CallWaveEngineConfiguration.QoSTaggingEnabled`.
 - Quality monitoring now ticks once a second during an active call even when
   `statisticsUpdateInterval` is `0`; periodic statistics events stay opt-in.
+
+### Changed
+
+- SwiftPM resolves the rebuilt PJSIP binary from release
+  `pjsip-2.17-ios15-opus-sha256.1` with checksum
+  `f534773f4dc0e813d0e7a7e3be10a751804232721876d1bad286ab3cba0d16a4`. The
+  build is still PJSIP 2.17 on Apple Network TLS with an iOS 15 floor; it adds
+  Opus and SHA-256 on top.
 
 ## [0.4.1] - 2026-08-04
 
