@@ -89,6 +89,42 @@ static os_log_type_t CallWaveOSLogType(CallWaveLogLevel level) {
     return CallWaveLog.isRedactingIdentifiers ? @"<private>" : value;
 }
 
+/// Replaces the value of every `Authorization:` / `Proxy-Authorization:` line
+/// with `<redacted>`, keeping the header name for readability. A no-op when
+/// redaction is off — FIELD-TESTING disables it deliberately to see the raw
+/// trace — or when the message mentions no such header.
++ (NSString *)scrubAuthorizationInMessage:(NSString *)message {
+    if (!CallWaveLog.isRedactingIdentifiers ||
+        [message rangeOfString:@"uthorization:"
+                       options:NSCaseInsensitiveSearch].location == NSNotFound) {
+        return message;
+    }
+
+    NSMutableString *scrubbed = [NSMutableString stringWithCapacity:message.length];
+    [message enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+        NSRange colon = [line rangeOfString:@":"];
+        NSString *name = colon.location == NSNotFound ? @""
+            : [[line substringToIndex:colon.location]
+               stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        BOOL sensitive = [name caseInsensitiveCompare:@"Authorization"] == NSOrderedSame ||
+                         [name caseInsensitiveCompare:@"Proxy-Authorization"] == NSOrderedSame;
+        if (sensitive) {
+            [scrubbed appendFormat:@"%@: <redacted>\n", name];
+        } else {
+            [scrubbed appendString:line];
+            [scrubbed appendString:@"\n"];
+        }
+    }];
+
+    // `enumerateLinesUsingBlock` drops the information about a missing final
+    // newline; restore the original shape.
+    if (![message hasSuffix:@"\n"] && ![message hasSuffix:@"\r"] &&
+        [scrubbed hasSuffix:@"\n"]) {
+        [scrubbed deleteCharactersInRange:NSMakeRange(scrubbed.length - 1, 1)];
+    }
+    return scrubbed;
+}
+
 + (void)logLevel:(CallWaveLogLevel)level
         category:(NSString *)category
           format:(NSString *)format, ... {
