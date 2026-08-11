@@ -21,6 +21,10 @@ typedef NS_ENUM(NSInteger, CallWaveEventType) {
     CallWaveEventTypeAudioRouteChanged,
     CallWaveEventTypeAudioSessionInterrupted,
     CallWaveEventTypeCallStatisticsUpdated,
+    /// A media-quality threshold was crossed. `qualityWarning` says which one
+    /// and `callStatistics` carries the snapshot that tripped it. Each warning
+    /// fires at most once per call.
+    CallWaveEventTypeCallQualityWarning,
 };
 
 @class CallWaveAudioRoute;
@@ -50,8 +54,10 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, strong, readonly, nullable) CallWaveAudioRoute *audioRoute;
 /// `YES` when an interruption began, `NO` when it ended.
 @property (nonatomic, assign, readonly, getter=isAudioSessionInterrupted) BOOL audioSessionInterrupted;
-/// Meaningful for `…CallStatisticsUpdated`.
+/// Meaningful for `…CallStatisticsUpdated` and `…CallQualityWarning`.
 @property (nonatomic, strong, readonly, nullable) CallWaveCallStatistics *callStatistics;
+/// Meaningful for `…CallQualityWarning`.
+@property (nonatomic, assign, readonly) CallWaveCallQualityWarning qualityWarning;
 /// Meaningful for `…CallEnded`.
 @property (nonatomic, assign, readonly) CXCallEndedReason endedReason;
 /// Set when the event reports a failure, e.g. a rejected registration.

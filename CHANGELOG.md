@@ -4,6 +4,22 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [Unreleased]
+
+### Added
+
+- `CallWaveEventTypeCallQualityWarning` with `CallWaveCallQualityWarning`
+  reasons (packet loss, high jitter, high round-trip time, no media). Each
+  warning fires at most once per call and carries the statistics snapshot that
+  tripped it. Thresholds and the watchdog live on `CallWaveEngineConfiguration`;
+  the no-media watchdog can optionally end the call automatically.
+- `CallWaveCallStatistics.estimatedMOS`: a simplified E-model quality estimate
+  for the statistics events and the diagnostics screen.
+- Voice service-type tagging (QoS) on SIP and RTP sockets, on by default and
+  controlled by `CallWaveEngineConfiguration.QoSTaggingEnabled`.
+- Quality monitoring now ticks once a second during an active call even when
+  `statisticsUpdateInterval` is `0`; periodic statistics events stay opt-in.
+
 ## [0.4.1] - 2026-08-04
 
 ### Licensing
