@@ -1,0 +1,94 @@
+diff --git a/pjsip/src/pjsip/sip_auth_client.c b/pjsip/src/pjsip/sip_auth_client.c
+index 246ffac..dfe5a08 100644
+--- a/pjsip/src/pjsip/sip_auth_client.c
++++ b/pjsip/src/pjsip/sip_auth_client.c
+@@ -61,18 +61,54 @@
+ #define HAVE_NO_OPENSSL 1
+ #define MD5_DIGEST_LENGTH (PJSIP_MD5STRLEN / 2)
+ #define SHA256_DIGEST_LENGTH (PJSIP_SHA256STRLEN / 2)
+-/* A macro just to get rid of type mismatch between char and unsigned char */
+-#define MD5_APPEND(pms,buf,len) pj_md5_update(pms, (const pj_uint8_t*)buf, \
+-                                              (unsigned)len)
++
++/*
++ * CallWaveKit patch: built without OpenSSL (the XCFramework uses Apple's TLS
++ * stack), upstream PJSIP answers MD5 digest challenges only. RFC 8760 servers
++ * increasingly challenge with SHA-256, so the OpenSSL-shaped calls in this
++ * file are dispatched onto pj_md5 or the bundled SHA-256 implementation.
++ */
++#include "callwave_sha256.h"
++
++typedef struct cw_evp_ctx {
++    int use_sha256;
++    pj_md5_context md5;
++    cw_sha256_ctx sha256;
++} cw_evp_ctx;
++
++static void cw_evp_init(cw_evp_ctx *ctx, const char *name) {
++    ctx->use_sha256 = name != NULL && strcmp(name, "SHA256") == 0;
++    if (ctx->use_sha256) {
++        cw_sha256_init(&ctx->sha256);
++    } else {
++        pj_md5_init(&ctx->md5);
++    }
++}
++
++static void cw_evp_update(cw_evp_ctx *ctx, const void *data, unsigned len) {
++    if (ctx->use_sha256) {
++        cw_sha256_update(&ctx->sha256, (const cw_sha256_byte *)data, len);
++    } else {
++        pj_md5_update(&ctx->md5, (const pj_uint8_t *)data, len);
++    }
++}
++
++static void cw_evp_final(cw_evp_ctx *ctx, unsigned char *digest) {
++    if (ctx->use_sha256) {
++        cw_sha256_final(&ctx->sha256, digest);
++    } else {
++        pj_md5_final(&ctx->md5, digest);
++    }
++}
++
+ #define EVP_MD char
+-#define EVP_MD_CTX pj_md5_context;
+-#define DEFINE_HASH_CONTEXT pj_md5_context pmc; pj_md5_context* mdctx = &pmc
++#define DEFINE_HASH_CONTEXT cw_evp_ctx cw_ctx; cw_evp_ctx *mdctx = &cw_ctx
+ 
+ #define EVP_get_digestbyname(digest_name) (digest_name)
+-#define EVP_MD_CTX_new() &pmc
+-#define EVP_DigestInit_ex(mdctx, md, _unused) (void)md; pj_md5_init(mdctx)
+-#define EVP_DigestUpdate(mdctx, data, len) MD5_APPEND(mdctx, data, len)
+-#define EVP_DigestFinal_ex(mdctx, digest, _unused) pj_md5_final(mdctx, digest)
++#define EVP_MD_CTX_new() &cw_ctx
++#define EVP_DigestInit_ex(mdctx, md, _unused) cw_evp_init(mdctx, (const char *)(md))
++#define EVP_DigestUpdate(mdctx, data, len) cw_evp_update(mdctx, (data), (unsigned)(len))
++#define EVP_DigestFinal_ex(mdctx, digest, _unused) cw_evp_final(mdctx, digest)
+ #define EVP_MD_CTX_free(mdctx)
+ #endif
+ 
+@@ -537,9 +573,11 @@ PJ_DEF(const pjsip_auth_algorithm *) pjsip_auth_get_algorithm_by_iana_name(
+     }
+ 
+ #ifdef HAVE_NO_OPENSSL
+-    i = PJSIP_AUTH_ALGORITHM_MD5;
+-    if (pj_stricmp(iana_name, &pjsip_auth_algorithms[i].iana_name) == 0) {
+-        return &pjsip_auth_algorithms[i];
++    /* CallWaveKit patch: MD5 and SHA-256 are recognised without OpenSSL. */
++    for (i = PJSIP_AUTH_ALGORITHM_MD5; i <= PJSIP_AUTH_ALGORITHM_SHA256; i++) {
++        if (pj_stricmp(iana_name, &pjsip_auth_algorithms[i].iana_name) == 0) {
++            return &pjsip_auth_algorithms[i];
++        }
+     }
+ #else
+     for (i = PJSIP_AUTH_ALGORITHM_NOT_SET + 1; i < PJSIP_AUTH_ALGORITHM_COUNT; i++) {
+@@ -572,7 +610,9 @@ PJ_DEF(pj_bool_t) pjsip_auth_is_algorithm_supported(
+     }
+ 
+ #ifdef HAVE_NO_OPENSSL
+-    return (algorithm_type == PJSIP_AUTH_ALGORITHM_MD5);
++    /* CallWaveKit patch: MD5 and SHA-256 both work without OpenSSL. */
++    return (algorithm_type == PJSIP_AUTH_ALGORITHM_MD5 ||
++            algorithm_type == PJSIP_AUTH_ALGORITHM_SHA256);
+ #else
+     /* For MD5, allow support even if OpenSSL disables it; we'll fallback. */
+     if (algorithm_type == PJSIP_AUTH_ALGORITHM_MD5) {
