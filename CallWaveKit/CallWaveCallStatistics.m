@@ -36,7 +36,7 @@
     return total > 0 ? (double)self.packetsLostOutbound / (double)total : 0.0;
 }
 
-- (double)estimatedMOS {
+- (double)experimentalEstimatedMOS {
     if (self.packetsReceived == 0) {
         return 0.0;
     }
@@ -58,7 +58,7 @@
 - (NSString *)description {
     return [NSString stringWithFormat:
             @"<%@: %@ %luHz, %.0fs, rx %lu (-%lu, %.1f%%), tx %lu (-%lu, %.1f%%), "
-            @"jitter %.0fms, rtt %.0fms, mos %.1f>",
+            @"jitter %.0fms, rtt %.0fms, experimental-mos %.1f>",
             NSStringFromClass(self.class),
             self.codec ?: @"none",
             (unsigned long)self.clockRate,
@@ -71,7 +71,7 @@
             self.outboundLossFraction * 100.0,
             self.jitter * 1000.0,
             self.roundTripTime * 1000.0,
-            self.estimatedMOS];
+            self.experimentalEstimatedMOS];
 }
 
 @end

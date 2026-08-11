@@ -13,8 +13,10 @@ bump may contain breaking changes, and each one is listed below.
   warning fires at most once per call and carries the statistics snapshot that
   tripped it. Thresholds and the watchdog live on `CallWaveEngineConfiguration`;
   the no-media watchdog can optionally end the call automatically.
-- `CallWaveCallStatistics.estimatedMOS`: a simplified E-model quality estimate
-  for the statistics events and the diagnostics screen.
+- `CallWaveCallStatistics.experimentalEstimatedMOS`: an explicitly
+  experimental simplified E-model estimate for diagnostics. It is not
+  calibrated for a codec, device or deployment and must not be used for SLAs;
+  raw loss, jitter and round-trip time remain the authoritative measurements.
 - Voice service-type tagging (QoS) on SIP and RTP sockets, on by default and
   controlled by `CallWaveEngineConfiguration.QoSTaggingEnabled`.
 - Quality monitoring now ticks once a second during an active call even when

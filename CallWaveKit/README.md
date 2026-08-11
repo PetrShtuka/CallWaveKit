@@ -285,9 +285,15 @@ if let statistics = calls.statistics(forCallWithUUID: nil) {
     print(statistics.codec ?? "-",
           statistics.inboundLossFraction,
           statistics.jitter,
-          statistics.roundTripTime)
+          statistics.roundTripTime,
+          statistics.experimentalEstimatedMOS)
 }
 ```
+
+`experimentalEstimatedMOS` is a simplified diagnostic estimate, not a
+validated measurement for a particular codec, device or intercom. Do not use
+it for SLAs or product analytics; make decisions from the raw loss, jitter and
+round-trip-time values above.
 
 ## Audio session
 
