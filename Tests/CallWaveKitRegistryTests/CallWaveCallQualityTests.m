@@ -141,24 +141,24 @@
                    CallWaveCallQualityWarningNoMedia);
 }
 
-- (void)testEstimatedMOSIsHighForAHealthyCall {
-    double mos = [self healthyStatistics].estimatedMOS;
+- (void)testExperimentalEstimatedMOSIsHighForAHealthyCall {
+    double mos = [self healthyStatistics].experimentalEstimatedMOS;
     XCTAssertGreaterThan(mos, 4.0);
     XCTAssertLessThanOrEqual(mos, 4.5);
 }
 
-- (void)testEstimatedMOSDropsWithLossAndDelay {
+- (void)testExperimentalEstimatedMOSDropsWithLossAndDelay {
     CallWaveCallStatistics *statistics =
         [self statisticsWithReceived:300 lostInbound:200 duration:40 jitter:0.1 rtt:0.6];
-    double mos = statistics.estimatedMOS;
+    double mos = statistics.experimentalEstimatedMOS;
     XCTAssertGreaterThanOrEqual(mos, 1.0);
     XCTAssertLessThan(mos, 3.0);
 }
 
-- (void)testEstimatedMOSIsUnknownWithoutMedia {
+- (void)testExperimentalEstimatedMOSIsUnknownWithoutMedia {
     CallWaveCallStatistics *statistics =
         [self statisticsWithReceived:0 lostInbound:0 duration:3 jitter:0 rtt:0];
-    XCTAssertEqual(statistics.estimatedMOS, 0.0);
+    XCTAssertEqual(statistics.experimentalEstimatedMOS, 0.0);
 }
 
 @end
