@@ -43,5 +43,23 @@ if [[ "$device_symbols" != *" T _pj_ssl_sock_create"* ]]; then
   echo "PJSIP device library does not export pj_ssl_sock_create" >&2
   exit 1
 fi
+if [[ "$device_symbols" != *" T _opus_encoder_create"* ]]; then
+  echo "PJSIP device library does not export the Opus encoder" >&2
+  exit 1
+fi
+if [[ "$device_symbols" != *" T _pjmedia_codec_opus_init"* ]]; then
+  echo "PJSIP device library does not export the Opus codec glue" >&2
+  exit 1
+fi
 
-echo "PJSIP XCFramework: architectures, iOS floor and Apple TLS capability verified"
+# The SHA-256 shim from Patches/ is static inside sip_auth_client.c, so it
+# shows up as a local symbol rather than an exported one. Match on a captured
+# snapshot: piping nm into `grep -q` can hand nm a SIGPIPE and, under
+# pipefail, fail the check despite the symbol being present.
+device_all_symbols="$(nm "$device_library")"
+if [[ "$device_all_symbols" != *"_cw_sha256_init"* ]]; then
+  echo "PJSIP device library does not contain the SHA-256 digest patch" >&2
+  exit 1
+fi
+
+echo "PJSIP XCFramework: architectures, iOS floor, Apple TLS, Opus and SHA-256 verified"
