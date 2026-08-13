@@ -6,6 +6,12 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Security
+
+- SIP `Authorization` and `Proxy-Authorization` credentials are now always
+  removed from protocol traces, even when identifier redaction is disabled for
+  field diagnostics. Folded authorization continuation lines are scrubbed too.
+
 ### Added
 
 - Opus 1.5.2 is linked statically into every PJSIP slice, so
@@ -30,10 +36,11 @@ bump may contain breaking changes, and each one is listed below.
 ### Changed
 
 - SwiftPM resolves the rebuilt PJSIP binary from release
-  `pjsip-2.17-ios15-opus-sha256.1` with checksum
+  `pjsip-2.17-ios15-opus-sha256.2` with checksum
   `f534773f4dc0e813d0e7a7e3be10a751804232721876d1bad286ab3cba0d16a4`. The
   build is still PJSIP 2.17 on Apple Network TLS with an iOS 15 floor; it adds
-  Opus and SHA-256 on top.
+  Opus and SHA-256 on top. The immutable `.2` tag contains the build script,
+  SHA-256 patch, build manifest and Opus license needed to reproduce the asset.
 
 ## [0.4.1] - 2026-08-04
 

@@ -25,13 +25,15 @@ as the regression matrix for Majordom deployments and future releases.
 
 ```swift
 CallWaveLog.level = .debug
-CallWaveLog.redactsIdentifiers = false   // never in a build you ship
+CallWaveLog.redactsIdentifiers = false   // exposes identifiers; field builds only
 ```
 
   Redaction is on by default, so without that second line every UUID, caller and
-  registrar reads `<private>` and the scenarios below cannot be followed. At
-  `.debug` the PJSIP protocol trace includes `Authorization` headers — this is a
-  debugging build, not a TestFlight build.
+  registrar reads `<private>` and the scenarios below cannot be followed.
+  `Authorization` and `Proxy-Authorization` credentials are always replaced
+  with `<redacted>`, including in debug builds; `redactsIdentifiers` never
+  disables credential scrubbing. The remaining identifiers still make this a
+  field-only diagnostic setting, not one to ship to users.
 
 - Console output, filtered on the library's subsystem:
 

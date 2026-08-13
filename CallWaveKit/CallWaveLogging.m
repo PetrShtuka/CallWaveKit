@@ -90,18 +90,25 @@ static os_log_type_t CallWaveOSLogType(CallWaveLogLevel level) {
 }
 
 /// Replaces the value of every `Authorization:` / `Proxy-Authorization:` line
-/// with `<redacted>`, keeping the header name for readability. A no-op when
-/// redaction is off — FIELD-TESTING disables it deliberately to see the raw
-/// trace — or when the message mentions no such header.
+/// with `<redacted>`, keeping the header name for readability. Credentials are
+/// always removed; `redactsIdentifiers` only controls identifiers such as
+/// callers, UUIDs and addresses. Folded continuation lines belonging to an
+/// authorization header are removed as well.
 + (NSString *)scrubAuthorizationInMessage:(NSString *)message {
-    if (!CallWaveLog.isRedactingIdentifiers ||
-        [message rangeOfString:@"uthorization:"
+    if ([message rangeOfString:@"uthorization:"
                        options:NSCaseInsensitiveSearch].location == NSNotFound) {
         return message;
     }
 
     NSMutableString *scrubbed = [NSMutableString stringWithCapacity:message.length];
+    __block BOOL scrubbingContinuation = NO;
     [message enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+        BOOL continuation = [line hasPrefix:@" "] || [line hasPrefix:@"\t"];
+        if (scrubbingContinuation && continuation) {
+            return;
+        }
+        scrubbingContinuation = NO;
+
         NSRange colon = [line rangeOfString:@":"];
         NSString *name = colon.location == NSNotFound ? @""
             : [[line substringToIndex:colon.location]
@@ -110,6 +117,7 @@ static os_log_type_t CallWaveOSLogType(CallWaveLogLevel level) {
                          [name caseInsensitiveCompare:@"Proxy-Authorization"] == NSOrderedSame;
         if (sensitive) {
             [scrubbed appendFormat:@"%@: <redacted>\n", name];
+            scrubbingContinuation = YES;
         } else {
             [scrubbed appendString:line];
             [scrubbed appendString:@"\n"];
