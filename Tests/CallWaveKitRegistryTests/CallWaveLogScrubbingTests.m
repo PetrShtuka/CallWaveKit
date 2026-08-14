@@ -66,11 +66,29 @@
     XCTAssertEqualObjects([CallWaveLog scrubAuthorizationInMessage:body], body);
 }
 
-- (void)testScrubbingIsDisabledWithRedaction {
+- (void)testCredentialsStayScrubbedWhenIdentifierRedactionIsDisabled {
     CallWaveLog.redactsIdentifiers = NO;
-    NSString *trace = @"Authorization: Digest response=\"1f4a9c2b\"";
+    NSString *trace = @"Authorization: Digest username=\"100\", "
+                       "response=\"1f4a9c2b\", nonce=\"secret\"";
 
-    XCTAssertEqualObjects([CallWaveLog scrubAuthorizationInMessage:trace], trace);
+    NSString *scrubbed = [CallWaveLog scrubAuthorizationInMessage:trace];
+    XCTAssertEqualObjects(scrubbed, @"Authorization: <redacted>");
+    XCTAssertFalse([scrubbed containsString:@"100"]);
+    XCTAssertFalse([scrubbed containsString:@"1f4a9c2b"]);
+    XCTAssertFalse([scrubbed containsString:@"secret"]);
+}
+
+- (void)testFoldedAuthorizationContinuationIsScrubbed {
+    CallWaveLog.redactsIdentifiers = NO;
+    NSString *trace = @"Authorization: Digest username=\"100\",\r\n"
+                       " response=\"1f4a9c2b\", nonce=\"secret\"\r\n"
+                       "Max-Forwards: 70";
+
+    NSString *scrubbed = [CallWaveLog scrubAuthorizationInMessage:trace];
+    XCTAssertEqualObjects(scrubbed,
+                          @"Authorization: <redacted>\nMax-Forwards: 70");
+    XCTAssertFalse([scrubbed containsString:@"response="]);
+    XCTAssertFalse([scrubbed containsString:@"secret"]);
 }
 
 - (void)testTrailingShapeIsPreserved {

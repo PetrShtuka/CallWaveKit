@@ -21,7 +21,7 @@ let package = Package(
         // instructions live in Vendor/PJSIP-BUILD.txt.
         .binaryTarget(
             name: "PJSIP",
-            url: "https://github.com/PetrShtuka/CallWaveKit/releases/download/pjsip-2.17-ios15-opus-sha256.1/PJSIP.xcframework.zip",
+            url: "https://github.com/PetrShtuka/CallWaveKit/releases/download/pjsip-2.17-ios15-opus-sha256.2/PJSIP.xcframework.zip",
             checksum: "f534773f4dc0e813d0e7a7e3be10a751804232721876d1bad286ab3cba0d16a4"
         ),
         .target(
