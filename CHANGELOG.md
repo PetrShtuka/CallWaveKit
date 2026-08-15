@@ -4,7 +4,7 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
-## [Unreleased]
+## [0.5.0] - 2026-08-15
 
 ### Security
 
