@@ -7,6 +7,7 @@
 #import "CallWaveEventInternal.h"
 #import "CallWaveLogInternal.h"
 #import "CallWaveAudioRouteInternal.h"
+#import "CallWaveAudioSessionCoordinator.h"
 #import "CallWaveDiagnosticsSnapshotInternal.h"
 #import "CallWaveTURNConfiguration.h"
 #import "CallWavePushCompletionGate.h"
@@ -25,7 +26,6 @@
 
 static NSString *const CallWaveFallbackCallerName = @"Unknown";
 static const NSTimeInterval CallWaveAnswerPollInterval = 0.25;
-static const NSTimeInterval CallWaveAudioFallbackDelay = 1.5;
 static const NSTimeInterval CallWaveDefaultAcceptDelay = 0.5;
 static const NSTimeInterval CallWaveMaximumAcceptDelay = 1.0;
 static const NSTimeInterval CallWaveDefaultAnswerTimeout = 10.0;
@@ -201,7 +201,8 @@ static void dispatchMain(dispatch_block_t block) {
     }
 }
 
-@interface CallWaveClient () <CXProviderDelegate, PKPushRegistryDelegate>
+@interface CallWaveClient () <CXProviderDelegate, PKPushRegistryDelegate,
+                              CallWaveAudioSessionCoordinatorDelegate>
 @property (nonatomic, strong, nullable, readwrite) CallWaveConfiguration *configuration;
 @property (nonatomic, copy, readwrite) CallWaveEngineConfiguration *engineConfiguration;
 @property (nonatomic, assign, readwrite) CallWaveIntegrationOptions integrationOptions;
@@ -216,9 +217,10 @@ static void dispatchMain(dispatch_block_t block) {
 @property (nonatomic, strong) CXCallController *callController;
 @property (nonatomic, strong) CallWaveCallRegistry *registry;
 @property (nonatomic, strong, nullable) PKPushRegistry *pushRegistry;
-@property (nonatomic, assign) BOOL audioSessionActive;
-@property (nonatomic, assign) BOOL desiredSpeakerEnabled;
-@property (nonatomic, strong, readwrite) CallWaveAudioRoute *currentAudioRoute;
+/// Owns the AVAudioSession: activation, interruptions, route changes, speaker
+/// preference. `audioSessionActive`, `desiredSpeakerEnabled` and
+/// `currentAudioRoute` below are pass-through accessors implemented on it.
+@property (nonatomic, strong) CallWaveAudioSessionCoordinator *audioCoordinator;
 @property (nonatomic, strong) dispatch_queue_t sipQueue;
 @property (nonatomic, strong) NSMutableDictionary<NSUUID *, id> *eventObservers;
 @property (nonatomic, strong, nullable) nw_path_monitor_t pathMonitor;
@@ -279,6 +281,8 @@ static void dispatchMain(dispatch_block_t block) {
             ?: [CallWaveEngineConfiguration defaultConfiguration];
         _integrationOptions = options;
         _registry = [[CallWaveCallRegistry alloc] init];
+        _audioCoordinator = [[CallWaveAudioSessionCoordinator alloc] init];
+        _audioCoordinator.delegate = self;
         _eventObservers = [NSMutableDictionary dictionary];
         _callQualityWarningLatches = [NSMutableDictionary dictionary];
         _registrationState = CallWaveRegistrationStateStopped;
@@ -290,7 +294,6 @@ static void dispatchMain(dispatch_block_t block) {
         _pushCompletionTimeout = CallWaveDefaultPushCompletionTimeout;
         _dtmfMethod = CallWaveDTMFMethodAuto;
         _networkPathSummary = @"unknown";
-        _currentAudioRoute = [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
         _sipQueue = dispatch_queue_create("com.callwave.pjsip", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(_sipQueue, kCallWaveSIPQueueKey, kCallWaveSIPQueueKey, NULL);
         _callController = [[CXCallController alloc] init];
@@ -306,7 +309,6 @@ static void dispatchMain(dispatch_block_t block) {
                                                selector:@selector(applicationDidBecomeActive:)
                                                    name:UIApplicationDidBecomeActiveNotification
                                                  object:nil];
-        [self observeAudioSessionNotifications];
     }
     return self;
 }
@@ -1101,78 +1103,92 @@ static void dispatchMain(dispatch_block_t block) {
     }];
 }
 
-#pragma mark - Audio session lifecycle
+#pragma mark - Audio session coordinator
 
-- (void)observeAudioSessionNotifications {
-    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-    [center addObserver:self selector:@selector(audioSessionRouteDidChange:)
-                   name:AVAudioSessionRouteChangeNotification object:nil];
-    [center addObserver:self selector:@selector(audioSessionWasInterrupted:)
-                   name:AVAudioSessionInterruptionNotification object:nil];
-    [center addObserver:self selector:@selector(audioMediaServicesWereReset:)
-                   name:AVAudioSessionMediaServicesWereResetNotification object:nil];
+// The coordinator owns the session; these accessors keep the historical
+// property surface (and its tests) working against it.
+- (BOOL)audioSessionActive {
+    return self.audioCoordinator.audioSessionActive;
 }
 
-- (void)publishCurrentAudioRoute {
-    dispatchMain(^{
-        self.currentAudioRoute =
-            [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
-        CallWaveEvent *event = [CallWaveEvent eventWithType:CallWaveEventTypeAudioRouteChanged];
-        event.audioRoute = self.currentAudioRoute;
-        [self emitEvent:event];
-    });
+- (void)setAudioSessionActive:(BOOL)audioSessionActive {
+    self.audioCoordinator.audioSessionActive = audioSessionActive;
 }
 
+- (BOOL)desiredSpeakerEnabled {
+    return self.audioCoordinator.desiredSpeakerEnabled;
+}
+
+- (void)setDesiredSpeakerEnabled:(BOOL)desiredSpeakerEnabled {
+    self.audioCoordinator.desiredSpeakerEnabled = desiredSpeakerEnabled;
+}
+
+- (CallWaveAudioRoute *)currentAudioRoute {
+    return self.audioCoordinator.currentAudioRoute;
+}
+
+// Test and CallKit entry points that predate the coordinator, kept as thin
+// forwarders so behavior stays observable at the client boundary.
 - (void)audioSessionRouteDidChange:(NSNotification *)notification {
-    CallWaveAudioRoute *route =
-        [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
-    if (self.desiredSpeakerEnabled && !route.isSpeakerActive) {
-        NSError *error = nil;
-        [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
-                                                         error:&error];
-        if (error != nil) {
-            CWLogWarning(CallWaveLogCategoryAudio,
-                         @"could not restore the speaker after a route change: %@", error);
-        }
-    }
-    [self publishCurrentAudioRoute];
+    [self.audioCoordinator handleRouteChangeNotification:notification];
 }
 
 - (void)audioSessionWasInterrupted:(NSNotification *)notification {
-    NSNumber *rawType = notification.userInfo[AVAudioSessionInterruptionTypeKey];
-    AVAudioSessionInterruptionType type = (AVAudioSessionInterruptionType)rawType.unsignedIntegerValue;
-    BOOL began = type == AVAudioSessionInterruptionTypeBegan;
-    if (began) {
-        self.audioSessionActive = NO;
-        [self performSIPAsync:^{
-            if (gPJSUAStarted) {
-                ensurePJThreadRegistered("CallWaveAudioInterrupted");
-                pjsua_set_no_snd_dev();
-            }
-        }];
-    } else {
-        NSNumber *rawOptions = notification.userInfo[AVAudioSessionInterruptionOptionKey];
-        AVAudioSessionInterruptionOptions options = rawOptions.unsignedIntegerValue;
-        if ((options & AVAudioSessionInterruptionOptionShouldResume) != 0 && self.registry.count > 0) {
-            [self activateAudioSessionWithError:NULL];
-        }
-    }
-    dispatchMain(^{
-        CallWaveEvent *event =
-            [CallWaveEvent eventWithType:CallWaveEventTypeAudioSessionInterrupted];
-        event.audioSessionInterrupted = began;
-        [self emitEvent:event];
-    });
+    [self.audioCoordinator handleInterruptionNotification:notification];
 }
 
 - (void)audioMediaServicesWereReset:(NSNotification *)notification {
-    CWLogWarning(CallWaveLogCategoryAudio, @"audio media services were reset");
-    self.audioSessionActive = NO;
-    [self configureAudioSessionWithError:NULL];
-    if (self.registry.count > 0) {
-        [self activateAudioSessionWithError:NULL];
-    }
-    [self publishCurrentAudioRoute];
+    [self.audioCoordinator handleMediaServicesResetNotification:notification];
+}
+
+#pragma mark - CallWaveAudioSessionCoordinatorDelegate
+
+- (BOOL)audioCoordinatorHasTrackedCalls:(CallWaveAudioSessionCoordinator *)coordinator {
+    return self.registry.count > 0;
+}
+
+/// Opens the PJSIP sound device and re-links the conference bridge. Runs on
+/// the SIP queue; safe to call more than once.
+- (void)audioCoordinatorRequestsSoundDeviceStart:(CallWaveAudioSessionCoordinator *)coordinator {
+    [self performSIPAsync:^{
+        if (!gPJSUAStarted) {
+            return;
+        }
+        ensurePJThreadRegistered("CallWaveAudio");
+        pj_status_t status = pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV,
+                                               PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV);
+        if (status != PJ_SUCCESS) {
+            CWLogError(CallWaveLogCategoryAudio, @"PJSIP sound device failed (%d)", status);
+            return;
+        }
+        for (CallWaveCall *call in self.registry.allCalls) {
+            [self connectMediaForCall:call];
+        }
+    }];
+}
+
+- (void)audioCoordinatorRequestsSoundDeviceStop:(CallWaveAudioSessionCoordinator *)coordinator {
+    [self performSIPAsync:^{
+        if (gPJSUAStarted) {
+            ensurePJThreadRegistered("CallWaveAudioInterrupted");
+            pjsua_set_no_snd_dev();
+        }
+    }];
+}
+
+- (void)audioCoordinator:(CallWaveAudioSessionCoordinator *)coordinator
+     didUpdateAudioRoute:(CallWaveAudioRoute *)route {
+    CallWaveEvent *event = [CallWaveEvent eventWithType:CallWaveEventTypeAudioRouteChanged];
+    event.audioRoute = route;
+    [self emitEvent:event];
+}
+
+- (void)audioCoordinator:(CallWaveAudioSessionCoordinator *)coordinator
+       interruptionBegan:(BOOL)began {
+    CallWaveEvent *event =
+        [CallWaveEvent eventWithType:CallWaveEventTypeAudioSessionInterrupted];
+    event.audioSessionInterrupted = began;
+    [self emitEvent:event];
 }
 
 #pragma mark - Events
@@ -2031,108 +2047,30 @@ forCallWithUUID:(NSUUID *)uuid
 
 #pragma mark - Media
 
+// The AVAudioSession half of media lives in CallWaveAudioSessionCoordinator;
+// these forwarders keep the call sites below (answer path, push path, CallKit
+// delegate) unchanged. The conference-bridge half — connectMediaForCall and
+// applyMicrophoneMuted — stays here because it needs the registry, the SIP
+// queue and PJSIP itself.
+
 - (BOOL)configureAudioSessionWithError:(NSError **)error {
-    AVAudioSession *session = AVAudioSession.sharedInstance;
-    NSError *categoryError = nil;
-    AVAudioSessionCategoryOptions options =
-#if defined(__IPHONE_26_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_26_0
-        AVAudioSessionCategoryOptionAllowBluetoothHFP |
-#else
-        // Renamed to …AllowBluetoothHFP in the iOS 26 SDK; same raw value.
-        AVAudioSessionCategoryOptionAllowBluetooth |
-#endif
-        AVAudioSessionCategoryOptionDefaultToSpeaker;
-    if ([session setCategory:AVAudioSessionCategoryPlayAndRecord
-                        mode:AVAudioSessionModeVoiceChat
-                     options:options
-                       error:&categoryError]) {
-        return YES;
-    }
-    CWLogError(CallWaveLogCategoryAudio, @"category configuration failed: %@", categoryError);
-    if (error != NULL) {
-        *error = categoryError ?: CallWaveMakeError(CallWaveErrorAudioSessionFailure,
-                                                    @"The audio category could not be set.");
-    }
-    return NO;
+    return [self.audioCoordinator configureAudioSessionWithError:error];
 }
 
 - (BOOL)activateAudioSessionWithError:(NSError **)error {
-    [self configureAudioSessionWithError:error];
-    NSError *activationError = nil;
-    if (![AVAudioSession.sharedInstance setActive:YES
-                                      withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-                                            error:&activationError]) {
-        CWLogError(CallWaveLogCategoryAudio, @"activation failed: %@", activationError);
-        if (error != NULL) {
-            *error = activationError ?: CallWaveMakeError(CallWaveErrorAudioSessionFailure,
-                                                          @"The audio session could not be activated.");
-        }
-        return NO;
-    }
-
-    [self openSoundDevice];
-    if (self.desiredSpeakerEnabled) {
-        [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
-                                                         error:NULL];
-    }
-    [self publishCurrentAudioRoute];
-    return YES;
+    return [self.audioCoordinator activateAudioSessionWithError:error];
 }
 
-/// Opens the PJSIP sound device and re-links the conference bridge. Safe to
-/// call more than once.
-- (void)openSoundDevice {
-    self.audioSessionActive = YES;
-    [self performSIPAsync:^{
-        if (!gPJSUAStarted) {
-            return;
-        }
-        ensurePJThreadRegistered("CallWaveAudio");
-        pj_status_t status = pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV,
-                                               PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV);
-        if (status != PJ_SUCCESS) {
-            CWLogError(CallWaveLogCategoryAudio, @"PJSIP sound device failed (%d)", status);
-            return;
-        }
-        for (CallWaveCall *call in self.registry.allCalls) {
-            [self connectMediaForCall:call];
-        }
-    }];
-}
-
-/// CallKit does not always deliver `-didActivateAudioSession:` — most often on
-/// a cold start answered from the lock screen. Activating the session manually
-/// a moment later is what keeps two-way audio working.
 - (void)scheduleAudioSessionFallback {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(CallWaveAudioFallbackDelay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (self.audioSessionActive || self.registry.count == 0) {
-            return;
-        }
-        CWLogWarning(CallWaveLogCategoryAudio,
-                     @"CallKit did not activate the session, activating manually");
-        [self activateAudioSessionWithError:NULL];
-    });
+    [self.audioCoordinator scheduleAudioSessionFallback];
 }
 
 - (void)audioSessionDidActivate:(AVAudioSession *)audioSession {
-    [self openSoundDevice];
-    if (self.desiredSpeakerEnabled) {
-        [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:NULL];
-    }
-    [self publishCurrentAudioRoute];
+    [self.audioCoordinator audioSessionDidActivate:audioSession];
 }
 
 - (void)audioSessionDidDeactivate:(AVAudioSession *)audioSession {
-    self.audioSessionActive = NO;
-    [self performSIPAsync:^{
-        ensurePJThreadRegistered("CallWaveCallKitAudioOff");
-        if (gPJSUAStarted) {
-            pjsua_set_no_snd_dev();
-        }
-    }];
-    [self publishCurrentAudioRoute];
+    [self.audioCoordinator audioSessionDidDeactivate:audioSession];
 }
 
 /// Must run on `sipQueue` or a PJSIP callback thread.
@@ -2178,24 +2116,7 @@ forCallWithUUID:(NSUUID *)uuid
 }
 
 - (BOOL)setSpeakerEnabled:(BOOL)enabled error:(NSError **)error {
-    [self configureAudioSessionWithError:NULL];
-    NSError *routeError = nil;
-    BOOL changed = [AVAudioSession.sharedInstance
-        overrideOutputAudioPort:enabled ? AVAudioSessionPortOverrideSpeaker
-                                        : AVAudioSessionPortOverrideNone
-                          error:&routeError];
-    if (!changed) {
-        CWLogError(CallWaveLogCategoryAudio, @"route change failed: %@", routeError);
-        if (error != NULL) {
-            *error = routeError ?: CallWaveMakeError(CallWaveErrorCallActionFailed,
-                                                     @"Audio route could not be changed.");
-        }
-    }
-    if (changed) {
-        self.desiredSpeakerEnabled = enabled;
-        [self publishCurrentAudioRoute];
-    }
-    return changed;
+    return [self.audioCoordinator setSpeakerEnabled:enabled error:error];
 }
 
 #pragma mark - CallKit
