@@ -2,6 +2,7 @@
 
 #import "CallWaveCallRegistry.h"
 #import "CallWaveCallQualityInternal.h"
+#import "CallWaveCallStateMachine.h"
 #import "CallWaveCallStatisticsInternal.h"
 #import "CallWaveError.h"
 #import "CallWaveEventInternal.h"
@@ -202,17 +203,18 @@ static void dispatchMain(dispatch_block_t block) {
 }
 
 @interface CallWaveClient () <CXProviderDelegate, PKPushRegistryDelegate,
-                              CallWaveAudioSessionCoordinatorDelegate>
+                              CallWaveAudioSessionCoordinatorDelegate,
+                              CallWaveCallStateMachineDelegate>
 @property (nonatomic, strong, nullable, readwrite) CallWaveConfiguration *configuration;
 @property (nonatomic, copy, readwrite) CallWaveEngineConfiguration *engineConfiguration;
 @property (nonatomic, assign, readwrite) CallWaveIntegrationOptions integrationOptions;
 @property (nonatomic, assign, readwrite, getter=isRunning) BOOL running;
 @property (nonatomic, assign, readwrite) CallWaveRegistrationState registrationState;
 @property (nonatomic, strong, nullable, readwrite) NSError *registrationError;
-@property (nonatomic, assign, readwrite) CallWaveCallState callState;
-@property (nonatomic, copy, nullable, readwrite) NSString *currentCaller;
-@property (nonatomic, strong, nullable, readwrite) NSUUID *currentCallUUID;
-@property (nonatomic, assign, readwrite) BOOL microphoneMuted;
+/// Owns per-call state transitions and the current-call projection. The public
+/// `callState`, `currentCallUUID`, `currentCaller` and `microphoneMuted` are
+/// pass-through accessors implemented on it.
+@property (nonatomic, strong) CallWaveCallStateMachine *callStateMachine;
 @property (nonatomic, strong, nullable, readwrite) CXProvider *provider;
 @property (nonatomic, strong) CXCallController *callController;
 @property (nonatomic, strong) CallWaveCallRegistry *registry;
@@ -283,10 +285,11 @@ static void dispatchMain(dispatch_block_t block) {
         _registry = [[CallWaveCallRegistry alloc] init];
         _audioCoordinator = [[CallWaveAudioSessionCoordinator alloc] init];
         _audioCoordinator.delegate = self;
+        _callStateMachine = [[CallWaveCallStateMachine alloc] initWithRegistry:_registry];
+        _callStateMachine.delegate = self;
         _eventObservers = [NSMutableDictionary dictionary];
         _callQualityWarningLatches = [NSMutableDictionary dictionary];
         _registrationState = CallWaveRegistrationStateStopped;
-        _callState = CallWaveCallStateIdle;
         _defaultCallerName = CallWaveFallbackCallerName;
         _answerTimeout = CallWaveDefaultAnswerTimeout;
         _acceptDelay = CallWaveDefaultAcceptDelay;
@@ -1002,10 +1005,7 @@ static void dispatchMain(dispatch_block_t block) {
     self.running = NO;
     self.registrationState = CallWaveRegistrationStateStopped;
     self.registrationError = nil;
-    self.callState = CallWaveCallStateIdle;
-    self.currentCallUUID = nil;
-    self.currentCaller = nil;
-    self.microphoneMuted = NO;
+    [self.callStateMachine resetToIdle];
     @synchronized (CallWaveClient.class) {
         if (gActiveClient == self) {
             gActiveClient = nil;
@@ -1226,6 +1226,26 @@ static void dispatchMain(dispatch_block_t block) {
 
 #pragma mark - Call state
 
+// State ownership lives in CallWaveCallStateMachine; these are the public and
+// internal pass-throughs plus the delegate hook that carries the side effects
+// (client delegate callback, event, statistics sampling).
+
+- (CallWaveCallState)callState {
+    return self.callStateMachine.state;
+}
+
+- (nullable NSUUID *)currentCallUUID {
+    return self.callStateMachine.currentCallUUID;
+}
+
+- (nullable NSString *)currentCaller {
+    return self.callStateMachine.currentCaller;
+}
+
+- (BOOL)isMicrophoneMuted {
+    return self.callStateMachine.microphoneMuted;
+}
+
 - (NSArray<NSUUID *> *)activeCallUUIDs {
     NSArray<CallWaveCall *> *calls = [self.registry.allCalls sortedArrayUsingComparator:
                                       ^NSComparisonResult(CallWaveCall *lhs, CallWaveCall *rhs) {
@@ -1252,27 +1272,17 @@ static void dispatchMain(dispatch_block_t block) {
 
 /// Resolves the UUID an argument-less call action should act on.
 - (nullable CallWaveCall *)resolveCallForUUID:(nullable NSUUID *)uuid {
-    if (uuid != nil) {
-        return [self.registry callForUUID:uuid];
-    }
-    NSUUID *current = self.currentCallUUID;
-    CallWaveCall *call = current != nil ? [self.registry callForUUID:current] : nil;
-    return call ?: self.registry.mostRecentCall;
+    return [self.callStateMachine resolveCallForUUID:uuid];
 }
 
 /// Must run on the main queue.
 - (void)publishCallState:(CallWaveCallState)state forUUID:(NSUUID *)uuid {
-    CallWaveCall *call = [self.registry callForUUID:uuid];
-    if (call != nil) {
-        call.state = state;
-        if ([uuid isEqual:self.currentCallUUID] || self.currentCallUUID == nil) {
-            self.currentCallUUID = uuid;
-            self.currentCaller = call.displayName;
-            self.microphoneMuted = call.microphoneMuted;
-        }
-    }
-    self.callState = state;
+    [self.callStateMachine publishState:state forUUID:uuid];
+}
 
+- (void)callStateMachine:(CallWaveCallStateMachine *)machine
+        didPublishState:(CallWaveCallState)state
+                forUUID:(NSUUID *)uuid {
     id<CallWaveClientDelegate> delegate = self.delegate;
     if ([delegate respondsToSelector:@selector(callWaveClient:didChangeCallState:uuid:)]) {
         [delegate callWaveClient:self didChangeCallState:state uuid:uuid];
@@ -1292,22 +1302,15 @@ static void dispatchMain(dispatch_block_t block) {
     if (uuid == nil) {
         return;
     }
-    [self.registry removeCallWithUUID:uuid];
+    [self.callStateMachine clearCallWithUUID:uuid];
     [self.callQualityWarningLatches removeObjectForKey:uuid];
-    [self detachCurrentCallIfItIs:uuid];
 }
 
 /// Moves `currentCallUUID` off `uuid` without touching the registry, for a call
 /// whose record has to outlive the user's decision — a cancellation waiting for
 /// its late INVITE. Must run on the main queue.
 - (void)detachCurrentCallIfItIs:(nullable NSUUID *)uuid {
-    if (uuid == nil || ![uuid isEqual:self.currentCallUUID]) {
-        return;
-    }
-    CallWaveCall *next = self.registry.mostRecentCall;
-    self.currentCallUUID = next.uuid;
-    self.currentCaller = next.displayName;
-    self.microphoneMuted = next != nil ? next.microphoneMuted : NO;
+    [self.callStateMachine detachIfCurrentUUID:uuid];
 }
 
 #pragma mark - Incoming-only calling
@@ -1661,9 +1664,7 @@ static void dispatchMain(dispatch_block_t block) {
         return NO;
     }
     dispatchMain(^{
-        if ([call.uuid isEqual:self.currentCallUUID]) {
-            self.microphoneMuted = muted;
-        }
+        [self.callStateMachine setMicrophoneMuted:muted forCall:call];
     });
     return YES;
 }
@@ -1682,8 +1683,8 @@ static void dispatchMain(dispatch_block_t block) {
         [self performSIPAsync:^{
             BOOL applied = [self applyMicrophoneMuted:muted toCall:call];
             dispatchMain(^{
-                if (applied && [call.uuid isEqual:self.currentCallUUID]) {
-                    self.microphoneMuted = muted;
+                if (applied) {
+                    [self.callStateMachine setMicrophoneMuted:muted forCall:call];
                 }
                 [self complete:completion
                          error:applied ? nil
@@ -2219,8 +2220,7 @@ forCallWithUUID:(NSUUID *)uuid
                 [self.registry removeCallWithUUID:orphan.uuid];
             }
         }
-        self.currentCallUUID = uuid;
-        self.currentCaller = call.displayName;
+        [self.callStateMachine adoptCurrentCall:call];
         [self publishCallState:CallWaveCallStateIncoming forUUID:uuid];
         [self configureAudioSessionWithError:NULL];
         [self scheduleIncomingCallTimeoutForUUID:uuid];
@@ -2273,8 +2273,7 @@ forCallWithUUID:(NSUUID *)uuid
         if (callId != CallWaveSIPCallIdInvalid) {
             [self.registry bindCallId:callId toUUID:uuid];
         }
-        self.currentCallUUID = uuid;
-        self.currentCaller = call.displayName;
+        [self.callStateMachine adoptCurrentCall:call];
 
         if (call.reportedToCallKit) {
             [self complete:completion error:nil];
@@ -2428,10 +2427,7 @@ forCallWithUUID:(NSUUID *)uuid
             [self hangupSIPCall:call.callId];
         }
     }];
-    self.currentCallUUID = nil;
-    self.currentCaller = nil;
-    self.microphoneMuted = NO;
-    self.callState = CallWaveCallStateIdle;
+    [self.callStateMachine resetToIdle];
 }
 
 - (void)provider:(CXProvider *)provider performStartCallAction:(CXStartCallAction *)action {
@@ -2484,8 +2480,8 @@ forCallWithUUID:(NSUUID *)uuid
     [self performSIPAsync:^{
         BOOL applied = [self applyMicrophoneMuted:action.muted toCall:call];
         dispatchMain(^{
-            if (applied && [call.uuid isEqual:self.currentCallUUID]) {
-                self.microphoneMuted = action.muted;
+            if (applied) {
+                [self.callStateMachine setMicrophoneMuted:action.muted forCall:call];
             }
             applied ? [action fulfill] : [action fail];
         });
@@ -2543,8 +2539,7 @@ forCallWithUUID:(NSUUID *)uuid
                 pending.caller = caller;
                 pending.displayName = [self displayNameForCaller:caller];
             }
-            self.currentCallUUID = pending.uuid;
-            self.currentCaller = pending.displayName;
+            [self.callStateMachine adoptCurrentCall:pending];
             [self publishCallState:CallWaveCallStateIncoming forUUID:pending.uuid];
             return;
         }
@@ -2561,8 +2556,7 @@ forCallWithUUID:(NSUUID *)uuid
         call.caller = caller;
         call.displayName = [self displayNameForCaller:caller];
         [self.registry bindCallId:callId toUUID:uuid];
-        self.currentCallUUID = uuid;
-        self.currentCaller = call.displayName;
+        [self.callStateMachine adoptCurrentCall:call];
         [self publishCallState:CallWaveCallStateIncoming forUUID:uuid];
         id<CallWaveClientDelegate> delegate = self.delegate;
         if ([delegate respondsToSelector:@selector(callWaveClient:didReceiveCallFrom:uuid:)]) {
