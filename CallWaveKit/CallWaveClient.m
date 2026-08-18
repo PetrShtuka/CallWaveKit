@@ -719,6 +719,31 @@ static void dispatchMain(dispatch_block_t block) {
     return status;
 }
 
+/// Maps the RFC 4028 session-timer settings onto a PJSUA account. Extracted
+/// so the Registry tests can drive it without a registrar. Thread-safe: it
+/// only writes into the given struct.
+- (void)configureSessionTimersForAccount:(pjsua_acc_config *)account
+                           configuration:(CallWaveConfiguration *)configuration {
+    pjsua_sip_timer_use use = PJSUA_SIP_TIMER_INACTIVE;
+    switch (configuration.sessionTimersMode) {
+        case CallWaveSessionTimersModeInactive:
+            use = PJSUA_SIP_TIMER_INACTIVE;
+            break;
+        case CallWaveSessionTimersModeOptional:
+            use = PJSUA_SIP_TIMER_OPTIONAL;
+            break;
+        case CallWaveSessionTimersModeAlways:
+            use = PJSUA_SIP_TIMER_ALWAYS;
+            break;
+        case CallWaveSessionTimersModeRequired:
+            use = PJSUA_SIP_TIMER_REQUIRED;
+            break;
+    }
+    account->use_timer = use;
+    account->timer_setting.sess_expires = (int)configuration.sessionTimerInterval;
+    account->timer_setting.min_se = (int)configuration.sessionTimerMinimum;
+}
+
 /// Swaps the SIP account in place. The PJSUA runtime is never destroyed, so
 /// this is safe to run for every incoming call. Must run on `sipQueue`.
 - (pj_status_t)applyConfigurationLocked:(CallWaveConfiguration *)configuration {
@@ -776,6 +801,7 @@ static void dispatchMain(dispatch_block_t block) {
     // SRTP over plain UDP signalling is what an intercom on a LAN offers; do
     // not additionally demand a secure signalling path.
     account.srtp_secure_signaling = 0;
+    [self configureSessionTimersForAccount:&account configuration:configuration];
     if (self.engineConfiguration.isQoSTaggingEnabled) {
         account.rtp_cfg.qos_type = PJ_QOS_TYPE_VOICE;
     }

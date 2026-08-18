@@ -88,6 +88,24 @@ typedef NS_ENUM(NSInteger, CallWaveMediaEncryption) {
     CallWaveMediaEncryptionMandatory,
 };
 
+/// Session timers (RFC 4028) policy for the account's calls. When timers run,
+/// the dialog is refreshed with a re-INVITE and a peer that died silently
+/// (crash, power loss, vanished NAT) is detected instead of hanging forever.
+typedef NS_ENUM(NSInteger, CallWaveSessionTimersMode) {
+    /// No Session-Expires/Min-SE negotiation. The historical behaviour; a
+    /// silently dead peer is only caught by the media timeout.
+    CallWaveSessionTimersModeInactive = 0,
+    /// Advertise support and run timers whenever the peer offers or asks for
+    /// them, without requiring anything. This is the default: it interoperates
+    /// with every peer, and calls against timer-capable peers are protected.
+    CallWaveSessionTimersModeOptional,
+    /// Offer timers on every call; a peer that ignores the offer simply runs
+    /// without them.
+    CallWaveSessionTimersModeAlways,
+    /// Require timers; a peer that will not accept them fails the call.
+    CallWaveSessionTimersModeRequired,
+};
+
 /// Verbosity of both CallWaveKit's own log and the PJSIP log it forwards.
 typedef NS_ENUM(NSInteger, CallWaveLogLevel) {
     CallWaveLogLevelOff = 0,

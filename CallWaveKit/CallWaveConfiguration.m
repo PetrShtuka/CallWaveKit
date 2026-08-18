@@ -35,6 +35,9 @@ static NSString *CallWaveTrim(NSString *_Nullable value) {
         _registrationExpiry = 0;
         _keepAliveInterval = 0;
         _mediaEncryption = CallWaveMediaEncryptionDisabled;
+        _sessionTimersMode = CallWaveSessionTimersModeOptional;
+        _sessionTimerInterval = 0;
+        _sessionTimerMinimum = 0;
         _additionalRegistrationHeaders = @{};
     }
     return self;
@@ -83,6 +86,11 @@ static NSString *CallWaveTrim(NSString *_Nullable value) {
         _registrationExpiry = builder.registrationExpiry > 0 ? builder.registrationExpiry : 300;
         _keepAliveInterval = builder.keepAliveInterval > 0 ? builder.keepAliveInterval : 15;
         _mediaEncryption = builder.mediaEncryption;
+        _sessionTimersMode = builder.sessionTimersMode;
+        _sessionTimerInterval = builder.sessionTimerInterval > 0 ? builder.sessionTimerInterval : 1800;
+        _sessionTimerMinimum = builder.sessionTimerMinimum > 0
+            ? MAX(builder.sessionTimerMinimum, 90)
+            : 90;
         _additionalRegistrationHeaders = [builder.additionalRegistrationHeaders copy];
     }
     return self;
@@ -149,6 +157,9 @@ static NSString *CallWaveTrim(NSString *_Nullable value) {
         builder.registrationExpiry = self.registrationExpiry;
         builder.keepAliveInterval = self.keepAliveInterval;
         builder.mediaEncryption = self.mediaEncryption;
+        builder.sessionTimersMode = self.sessionTimersMode;
+        builder.sessionTimerInterval = self.sessionTimerInterval;
+        builder.sessionTimerMinimum = self.sessionTimerMinimum;
         builder.additionalRegistrationHeaders = self.additionalRegistrationHeaders;
         if (block != nil) {
             block(builder);
@@ -192,6 +203,9 @@ static NSString *CallWaveTrim(NSString *_Nullable value) {
            self.registrationExpiry == other.registrationExpiry &&
            self.keepAliveInterval == other.keepAliveInterval &&
            self.mediaEncryption == other.mediaEncryption &&
+           self.sessionTimersMode == other.sessionTimersMode &&
+           self.sessionTimerInterval == other.sessionTimerInterval &&
+           self.sessionTimerMinimum == other.sessionTimerMinimum &&
            [self.additionalRegistrationHeaders isEqualToDictionary:other.additionalRegistrationHeaders];
 }
 

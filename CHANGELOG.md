@@ -6,6 +6,16 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Added
+
+- Session timers (RFC 4028) via `CallWaveConfiguration`: `sessionTimersMode`
+  (`.inactive`, `.optional`, `.always`, `.required`), `sessionTimerInterval`
+  (default 1800 s) and `sessionTimerMinimum` (default 90 s, clamped to the RFC
+  minimum). The default `.optional` mode advertises support and runs
+  re-INVITE refreshers whenever the peer negotiates them, so a call whose
+  remote side died silently (crash, power loss, vanished NAT binding) is torn
+  down instead of hanging until the media timeout.
+
 ### Internal
 
 - AVAudioSession ownership moved out of `CallWaveClient` into a new internal

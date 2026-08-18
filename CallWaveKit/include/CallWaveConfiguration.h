@@ -38,6 +38,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// binding open for an intercom that calls once a week.
 @property (nonatomic, assign) NSUInteger keepAliveInterval;
 @property (nonatomic, assign) CallWaveMediaEncryption mediaEncryption;
+/// Session timers (RFC 4028) policy for calls on this account.
+@property (nonatomic, assign) CallWaveSessionTimersMode sessionTimersMode;
+/// Requested `Session-Expires` in seconds. `0` means 1800, the value RFC 4028
+/// recommends.
+@property (nonatomic, assign) NSUInteger sessionTimerInterval;
+/// Requested `Min-SE` in seconds. `0` means 90; smaller non-zero values are
+/// clamped to 90 because RFC 4028 forbids a lower absolute minimum.
+@property (nonatomic, assign) NSUInteger sessionTimerMinimum;
 /// Extra headers added to REGISTER, e.g. a tenant identifier. Header names are
 /// used verbatim.
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *additionalRegistrationHeaders;
@@ -70,6 +78,12 @@ NS_SWIFT_SENDABLE
 @property (nonatomic, assign, readonly) NSUInteger keepAliveInterval;
 /// Defaults to `CallWaveMediaEncryptionDisabled`.
 @property (nonatomic, assign, readonly) CallWaveMediaEncryption mediaEncryption;
+/// Defaults to `CallWaveSessionTimersModeOptional`.
+@property (nonatomic, assign, readonly) CallWaveSessionTimersMode sessionTimersMode;
+/// Defaults to `1800`.
+@property (nonatomic, assign, readonly) NSUInteger sessionTimerInterval;
+/// Defaults to `90`, the smallest value RFC 4028 allows.
+@property (nonatomic, assign, readonly) NSUInteger sessionTimerMinimum;
 @property (nonatomic, copy, readonly) NSDictionary<NSString *, NSString *> *additionalRegistrationHeaders;
 
 /// `host` or `host:port`. Retained for callers written against the previous
