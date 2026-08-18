@@ -4,6 +4,17 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [Unreleased]
+
+### Internal
+
+- AVAudioSession ownership moved out of `CallWaveClient` into a new internal
+  `CallWaveAudioSessionCoordinator`: category and activation, interruption and
+  media-services-reset handling, speaker preference and its restoration across
+  route changes, and the published audio route. PJSIP no longer appears in the
+  audio-session code path — the coordinator asks its delegate (the client) to
+  open or drop the sound device on the SIP queue. No public API changes.
+
 ## [0.5.0] - 2026-08-15
 
 ### Security
