@@ -14,6 +14,12 @@ bump may contain breaking changes, and each one is listed below.
   route changes, and the published audio route. PJSIP no longer appears in the
   audio-session code path — the coordinator asks its delegate (the client) to
   open or drop the sound device on the SIP queue. No public API changes.
+- Per-call state transitions and the current-call projection (aggregate state,
+  current call UUID, caller identity, microphone mute) moved out of
+  `CallWaveClient` into a new internal `CallWaveCallStateMachine`, with the
+  client as its delegate for state-change callbacks and events. This makes
+  call-state races (push/INVITE/cancel, concurrent reporting) testable in
+  isolation. No public API changes.
 
 ## [0.5.0] - 2026-08-15
 
