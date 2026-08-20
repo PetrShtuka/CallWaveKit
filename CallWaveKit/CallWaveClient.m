@@ -740,8 +740,8 @@ static void dispatchMain(dispatch_block_t block) {
             break;
     }
     account->use_timer = use;
-    account->timer_setting.sess_expires = (int)configuration.sessionTimerInterval;
-    account->timer_setting.min_se = (int)configuration.sessionTimerMinimum;
+    account->timer_setting.sess_expires = (unsigned)configuration.sessionTimerInterval;
+    account->timer_setting.min_se = (unsigned)configuration.sessionTimerMinimum;
 }
 
 /// Swaps the SIP account in place. The PJSUA runtime is never destroyed, so

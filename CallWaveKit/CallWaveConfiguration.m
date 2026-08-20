@@ -1,5 +1,7 @@
 #import "CallWaveConfiguration.h"
 
+#include <limits.h>
+
 static NSUInteger CallWaveDefaultPortForTransport(CallWaveTransport transport) {
     return transport == CallWaveTransportTLS ? 5061 : 5060;
 }
@@ -19,6 +21,11 @@ static NSString *CallWaveTransportURIParameter(CallWaveTransport transport) {
 static NSString *CallWaveTrim(NSString *_Nullable value) {
     return [value stringByTrimmingCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+}
+
+static NSUInteger CallWaveSessionTimerValue(NSUInteger value, NSUInteger fallback) {
+    NSUInteger resolved = value > 0 ? value : fallback;
+    return MIN(resolved, (NSUInteger)UINT_MAX);
 }
 
 @implementation CallWaveConfigurationBuilder
@@ -87,10 +94,9 @@ static NSString *CallWaveTrim(NSString *_Nullable value) {
         _keepAliveInterval = builder.keepAliveInterval > 0 ? builder.keepAliveInterval : 15;
         _mediaEncryption = builder.mediaEncryption;
         _sessionTimersMode = builder.sessionTimersMode;
-        _sessionTimerInterval = builder.sessionTimerInterval > 0 ? builder.sessionTimerInterval : 1800;
-        _sessionTimerMinimum = builder.sessionTimerMinimum > 0
-            ? MAX(builder.sessionTimerMinimum, 90)
-            : 90;
+        _sessionTimerMinimum = MAX(CallWaveSessionTimerValue(builder.sessionTimerMinimum, 90), 90);
+        _sessionTimerInterval = MAX(CallWaveSessionTimerValue(builder.sessionTimerInterval, 1800),
+                                    _sessionTimerMinimum);
         _additionalRegistrationHeaders = [builder.additionalRegistrationHeaders copy];
     }
     return self;

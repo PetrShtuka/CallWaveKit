@@ -41,10 +41,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Session timers (RFC 4028) policy for calls on this account.
 @property (nonatomic, assign) CallWaveSessionTimersMode sessionTimersMode;
 /// Requested `Session-Expires` in seconds. `0` means 1800, the value RFC 4028
-/// recommends.
+/// recommends. Values below `sessionTimerMinimum` are raised to that minimum.
 @property (nonatomic, assign) NSUInteger sessionTimerInterval;
 /// Requested `Min-SE` in seconds. `0` means 90; smaller non-zero values are
-/// clamped to 90 because RFC 4028 forbids a lower absolute minimum.
+/// clamped to 90 because RFC 4028 forbids a lower absolute minimum. Values
+/// larger than the PJSIP field can represent are capped safely.
 @property (nonatomic, assign) NSUInteger sessionTimerMinimum;
 /// Extra headers added to REGISTER, e.g. a tenant identifier. Header names are
 /// used verbatim.

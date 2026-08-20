@@ -104,4 +104,22 @@
     XCTAssertEqual(account.timer_setting.min_se, 120);
 }
 
+- (void)testNormalizedIntervalsFitThePJSIPAccountFields {
+    CallWaveConfiguration *configuration =
+        [[CallWaveConfiguration alloc] initWithBuilder:^(CallWaveConfigurationBuilder *builder) {
+            builder.host = @"sip.example.com";
+            builder.username = @"1001";
+            builder.password = @"not-a-real-credential";
+            builder.sessionTimerInterval = NSUIntegerMax;
+            builder.sessionTimerMinimum = NSUIntegerMax;
+        }];
+    pjsua_acc_config account;
+    pj_bzero(&account, sizeof(account));
+
+    [[self makeClient] configureSessionTimersForAccount:&account configuration:configuration];
+
+    XCTAssertEqual(account.timer_setting.sess_expires, UINT_MAX);
+    XCTAssertEqual(account.timer_setting.min_se, UINT_MAX);
+}
+
 @end

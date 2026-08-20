@@ -174,6 +174,32 @@ final class CallWaveConfigurationTests: XCTestCase {
         XCTAssertEqual(configuration.sessionTimerMinimum, 90)
     }
 
+    func testSessionTimerIntervalIsNeverBelowMinimum() {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimerInterval = 60
+            builder.sessionTimerMinimum = 120
+        }
+
+        XCTAssertEqual(configuration.sessionTimerInterval, 120)
+        XCTAssertEqual(configuration.sessionTimerMinimum, 120)
+    }
+
+    func testSessionTimerValuesFitPJSIPUnsignedFields() {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimerInterval = .max
+            builder.sessionTimerMinimum = .max
+        }
+
+        XCTAssertEqual(configuration.sessionTimerInterval, UInt(UInt32.max))
+        XCTAssertEqual(configuration.sessionTimerMinimum, UInt(UInt32.max))
+    }
+
     func testApplyingChangesOneFieldAndKeepsTheRest() {
         let original = CallWaveConfiguration { builder in
             builder.host = "sip.example.com"

@@ -15,6 +15,8 @@ bump may contain breaking changes, and each one is listed below.
   re-INVITE refreshers whenever the peer negotiates them, so a call whose
   remote side died silently (crash, power loss, vanished NAT binding) is torn
   down instead of hanging until the media timeout.
+  Invalid interval combinations are normalized so `Session-Expires` is never
+  lower than `Min-SE`, and oversized values are capped to PJSIP's field width.
 
 ### Internal
 
