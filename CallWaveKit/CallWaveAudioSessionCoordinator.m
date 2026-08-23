@@ -5,6 +5,7 @@
 #import "CallWaveLogInternal.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <os/lock.h>
 
 /// Delay before the manual session activation that covers CallKit never
 /// delivering `didActivateAudioSession` (cold start from the lock screen).
@@ -18,11 +19,55 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
     }
 }
 
-@implementation CallWaveAudioSessionCoordinator
+@implementation CallWaveAudioSessionCoordinator {
+    /// AVAudioSession delivers its notifications on its own thread, so the
+    /// three published values below are written from there while the client
+    /// reads them from the main queue and from the SIP queue. `currentAudioRoute`
+    /// is the one that matters: an unsynchronized strong property assigned from
+    /// two threads over-releases rather than merely going stale.
+    os_unfair_lock _stateLock;
+    CallWaveAudioRoute *_currentAudioRoute;
+    BOOL _audioSessionActive;
+    BOOL _desiredSpeakerEnabled;
+}
+
+- (BOOL)audioSessionActive {
+    os_unfair_lock_lock(&_stateLock);
+    BOOL value = _audioSessionActive;
+    os_unfair_lock_unlock(&_stateLock);
+    return value;
+}
+
+- (void)setAudioSessionActive:(BOOL)audioSessionActive {
+    os_unfair_lock_lock(&_stateLock);
+    _audioSessionActive = audioSessionActive;
+    os_unfair_lock_unlock(&_stateLock);
+}
+
+- (BOOL)desiredSpeakerEnabled {
+    os_unfair_lock_lock(&_stateLock);
+    BOOL value = _desiredSpeakerEnabled;
+    os_unfair_lock_unlock(&_stateLock);
+    return value;
+}
+
+- (void)setDesiredSpeakerEnabled:(BOOL)desiredSpeakerEnabled {
+    os_unfair_lock_lock(&_stateLock);
+    _desiredSpeakerEnabled = desiredSpeakerEnabled;
+    os_unfair_lock_unlock(&_stateLock);
+}
+
+- (CallWaveAudioRoute *)currentAudioRoute {
+    os_unfair_lock_lock(&_stateLock);
+    CallWaveAudioRoute *value = _currentAudioRoute;
+    os_unfair_lock_unlock(&_stateLock);
+    return value;
+}
 
 - (instancetype)init {
     self = [super init];
     if (self) {
+        _stateLock = OS_UNFAIR_LOCK_INIT;
         _currentAudioRoute = [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(handleRouteChangeNotification:)
@@ -43,9 +88,12 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
 
 - (void)publishCurrentAudioRoute {
     callWaveAudioDispatchMain(^{
-        self->_currentAudioRoute =
+        CallWaveAudioRoute *route =
             [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
-        [self.delegate audioCoordinator:self didUpdateAudioRoute:self->_currentAudioRoute];
+        os_unfair_lock_lock(&self->_stateLock);
+        self->_currentAudioRoute = route;
+        os_unfair_lock_unlock(&self->_stateLock);
+        [self.delegate audioCoordinator:self didUpdateAudioRoute:route];
     });
 }
 

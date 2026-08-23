@@ -368,14 +368,35 @@ the same thing.
 
 ## Threading
 
-Every public method is safe to call from any thread. Internally the client keeps
-two rules: its own mutable state changes on the main queue, which is also where
-the delegate, the event observers and CallKit are driven; and every `pjsua_*`
-sequence the client initiates runs on one serial queue, so a "read the call
-info, then act on it" pair cannot interleave with another. PJSIP's own callback
-threads talk to PJSUA directly — a `180 Ringing` that waits for a queue hop
-arrives too late — and reach CallWaveKit state only through a lock-protected
-call registry.
+Every public method is safe to call from any thread, and so is every published
+property. Internally the client keeps three rules.
+
+**Every `pjsua_*` sequence the client initiates runs on one serial queue**, so a
+"read the call info, then act on it" pair cannot interleave with another. PJSIP's
+own callback threads talk to PJSUA directly — a `180 Ringing` that waits for a
+queue hop arrives too late — and reach CallWaveKit state only through the
+lock-protected call registry.
+
+**The call projection changes on the main queue.** `callState`,
+`currentCallUUID`, `currentCaller` and `microphoneMuted` are written there and
+nowhere else, which is also where the delegate, the event observers and CallKit
+are driven, so an observer never sees half of a transition.
+
+**The rest of the published state is lock-protected rather than main-queue
+bound.** `isRunning`, `registrationState`, `registrationError` and
+`configuration` are written synchronously by `-start`, `-login…`, `-unregister`,
+`-logout` and `-stop`, because those methods return to a caller that reads them
+back immediately. Their accessors take a lock instead of relying on the calling
+thread, so reading them from a PJSIP callback thread — or writing
+`defaultCallerName` from one thread while another rings — is defined behaviour
+rather than a torn read or an over-release. The same applies to the audio
+coordinator's `currentAudioRoute`, which AVAudioSession republishes from its own
+notification thread.
+
+The properties that are read but never written after setup — `answerTimeout`,
+`acceptDelay`, `incomingCallTimeout`, `pushCompletionTimeout`, `dtmfMethod` —
+are plain scalars and are left unsynchronized on purpose. Set them before
+`-start`, as the quick start does.
 
 ## Host application settings
 

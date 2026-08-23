@@ -17,6 +17,7 @@
 #import <Network/Network.h>
 #import <PushKit/PushKit.h>
 #import <UIKit/UIKit.h>
+#import <os/lock.h>
 #import <pthread.h>
 #if __has_include(<PJSIP/pjsua.h>)
 #import <PJSIP/pjsua.h>
@@ -250,7 +251,82 @@ static void dispatchMain(dispatch_block_t block) {
                           reason:(NSString *)reason;
 @end
 
-@implementation CallWaveClient
+@implementation CallWaveClient {
+    /// Guards the published state below. Those properties are written on the
+    /// main queue but read from the SIP queue, from PJSIP's own callback
+    /// threads and from whatever thread the host calls a public method on, so
+    /// plain synthesized accessors race — and for an object-typed property that
+    /// race is an over-release, not merely a stale read. The declared property
+    /// surface stays `nonatomic`; the lock lives in the accessors below instead.
+    os_unfair_lock _stateLock;
+
+    CallWaveConfiguration *_configuration;
+    CXProvider *_provider;
+    BOOL _running;
+    CallWaveRegistrationState _registrationState;
+    NSError *_registrationError;
+    CallWaveCallState _callState;
+    NSUUID *_currentCallUUID;
+    NSString *_currentCaller;
+    BOOL _microphoneMuted;
+    NSString *_defaultCallerName;
+    CallWavePushPayloadParser _pushPayloadParser;
+    NSString *_networkPathSummary;
+    NSInteger _lastRegistrationSIPStatusCode;
+}
+
+#pragma mark - Published state
+
+// One accessor pair per property would be 200 lines of identical bodies, so the
+// shape is written once here. `nonatomic` in the declaration only means the
+// compiler does not generate the lock; implementing both accessors by hand is
+// what actually makes the property safe to touch from another thread.
+
+#define CallWaveLockedGetter(type, getter, ivar) \
+    - (type)getter { \
+        os_unfair_lock_lock(&_stateLock); \
+        type value = ivar; \
+        os_unfair_lock_unlock(&_stateLock); \
+        return value; \
+    }
+
+#define CallWaveLockedSetter(type, setter, ivar) \
+    - (void)setter:(type)newValue { \
+        os_unfair_lock_lock(&_stateLock); \
+        ivar = newValue; \
+        os_unfair_lock_unlock(&_stateLock); \
+    }
+
+/// The copy happens outside the lock: `-copy` runs arbitrary code, and a block
+/// copy allocates, neither of which belongs inside an unfair lock.
+#define CallWaveLockedCopySetter(type, setter, ivar) \
+    - (void)setter:(type)newValue { \
+        type copied = [newValue copy]; \
+        os_unfair_lock_lock(&_stateLock); \
+        ivar = copied; \
+        os_unfair_lock_unlock(&_stateLock); \
+    }
+
+#define CallWaveLockedProperty(type, getter, setter, ivar) \
+    CallWaveLockedGetter(type, getter, ivar) \
+    CallWaveLockedSetter(type, setter, ivar)
+
+#define CallWaveLockedCopyProperty(type, getter, setter, ivar) \
+    CallWaveLockedGetter(type, getter, ivar) \
+    CallWaveLockedCopySetter(type, setter, ivar)
+
+CallWaveLockedProperty(CallWaveConfiguration *, configuration, setConfiguration, _configuration)
+CallWaveLockedProperty(CXProvider *, provider, setProvider, _provider)
+CallWaveLockedProperty(BOOL, isRunning, setRunning, _running)
+CallWaveLockedProperty(CallWaveRegistrationState, registrationState, setRegistrationState, _registrationState)
+CallWaveLockedProperty(NSError *, registrationError, setRegistrationError, _registrationError)
+CallWaveLockedProperty(CallWaveCallState, callState, setCallState, _callState)
+CallWaveLockedProperty(NSUUID *, currentCallUUID, setCurrentCallUUID, _currentCallUUID)
+CallWaveLockedCopyProperty(NSString *, currentCaller, setCurrentCaller, _currentCaller)
+CallWaveLockedProperty(BOOL, isMicrophoneMuted, setMicrophoneMuted, _microphoneMuted)
+CallWaveLockedCopyProperty(CallWavePushPayloadParser, pushPayloadParser, setPushPayloadParser, _pushPayloadParser)
+CallWaveLockedCopyProperty(NSString *, networkPathSummary, setNetworkPathSummary, _networkPathSummary)
+CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistrationSIPStatusCode, _lastRegistrationSIPStatusCode)
 
 #pragma mark - Lifecycle
 
@@ -276,6 +352,9 @@ static void dispatchMain(dispatch_block_t block) {
                   engineConfiguration:(CallWaveEngineConfiguration *)engineConfiguration {
     self = [super init];
     if (self) {
+        // Before anything that goes through a locked accessor, which -setupCallKit
+        // below does.
+        _stateLock = OS_UNFAIR_LOCK_INIT;
         _configuration = [configuration copy];
         _engineConfiguration = [engineConfiguration copy]
             ?: [CallWaveEngineConfiguration defaultConfiguration];
@@ -363,10 +442,22 @@ static void dispatchMain(dispatch_block_t block) {
     return CallWaveLog.logger;
 }
 
+- (NSString *)defaultCallerName {
+    os_unfair_lock_lock(&_stateLock);
+    NSString *value = _defaultCallerName;
+    os_unfair_lock_unlock(&_stateLock);
+    return value;
+}
+
+/// Read from PJSIP's callback threads through -displayNameForCaller:, so it
+/// gets the same treatment as the rest of the published state.
 - (void)setDefaultCallerName:(NSString *)defaultCallerName {
-    _defaultCallerName = defaultCallerName.length > 0
+    NSString *resolved = defaultCallerName.length > 0
         ? [defaultCallerName copy]
         : CallWaveFallbackCallerName;
+    os_unfair_lock_lock(&_stateLock);
+    _defaultCallerName = resolved;
+    os_unfair_lock_unlock(&_stateLock);
 }
 
 - (void)setAcceptDelay:(NSTimeInterval)acceptDelay {
@@ -1006,6 +1097,7 @@ static void dispatchMain(dispatch_block_t block) {
                 pjsua_call_hangup(call.callId, 0, NULL, NULL);
             }
         }
+        [self stopPathMonitorLocked];
     }];
     // Without this the calls stay on the CallKit call list after the stack is
     // gone, and the user is left looking at a call that cannot be ended.
@@ -1015,23 +1107,14 @@ static void dispatchMain(dispatch_block_t block) {
                 [self reportCallEndedWithUUID:call.uuid reason:CXCallEndedReasonFailed];
             }
         }
+        [self clearPublishedCallState];
     });
-
-    if (self.pathMonitor != nil) {
-        nw_path_monitor_cancel(self.pathMonitor);
-        self.pathMonitor = nil;
-        self.hasObservedPath = NO;
-    }
 
     [CallWaveClient destroyRuntimeOnQueue:self.sipQueue];
 
     self.running = NO;
     self.registrationState = CallWaveRegistrationStateStopped;
     self.registrationError = nil;
-    self.callState = CallWaveCallStateIdle;
-    self.currentCallUUID = nil;
-    self.currentCaller = nil;
-    self.microphoneMuted = NO;
     @synchronized (CallWaveClient.class) {
         if (gActiveClient == self) {
             gActiveClient = nil;
@@ -1041,19 +1124,38 @@ static void dispatchMain(dispatch_block_t block) {
 
 #pragma mark - Network and application lifecycle
 
+/// The monitor, its `pathMonitor` handle and the `hasObservedPath` /
+/// `lastPathSignature` bookkeeping all live on `sipQueue` — which is also the
+/// queue the monitor delivers on — so starting, stopping and observing cannot
+/// interleave. `-start…`/`-stop…` are called from the host's thread, hence the
+/// hop; `-handleObservedPath:` is already there.
 - (void)startPathMonitorIfNeeded {
-    if (!self.engineConfiguration.handlesNetworkChanges || self.pathMonitor != nil) {
+    if (!self.engineConfiguration.handlesNetworkChanges) {
         return;
     }
+    [self performSIPAsync:^{
+        if (self.pathMonitor != nil) {
+            return;
+        }
+        nw_path_monitor_t monitor = nw_path_monitor_create();
+        nw_path_monitor_set_queue(monitor, self.sipQueue);
+        __weak typeof(self) weakSelf = self;
+        nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
+            [weakSelf handleObservedPath:path];
+        });
+        self.pathMonitor = monitor;
+        nw_path_monitor_start(monitor);
+    }];
+}
 
-    nw_path_monitor_t monitor = nw_path_monitor_create();
-    nw_path_monitor_set_queue(monitor, self.sipQueue);
-    __weak typeof(self) weakSelf = self;
-    nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
-        [weakSelf handleObservedPath:path];
-    });
-    self.pathMonitor = monitor;
-    nw_path_monitor_start(monitor);
+/// Must run on `sipQueue`.
+- (void)stopPathMonitorLocked {
+    if (self.pathMonitor == nil) {
+        return;
+    }
+    nw_path_monitor_cancel(self.pathMonitor);
+    self.pathMonitor = nil;
+    self.hasObservedPath = NO;
 }
 
 /// Runs on `sipQueue`.
@@ -1334,6 +1436,19 @@ static void dispatchMain(dispatch_block_t block) {
     self.currentCallUUID = next.uuid;
     self.currentCaller = next.displayName;
     self.microphoneMuted = next != nil ? next.microphoneMuted : NO;
+}
+
+/// Drops the "most recent call" projection in one step, so a main-queue
+/// observer never catches a teardown half-applied. `callState`,
+/// `currentCallUUID`, `currentCaller` and `microphoneMuted` are written from
+/// the main queue and nowhere else; -stop and -providerDidReset: are the two
+/// callers that can arrive from another thread, which is why they hop first.
+/// Must run on the main queue.
+- (void)clearPublishedCallState {
+    self.callState = CallWaveCallStateIdle;
+    self.currentCallUUID = nil;
+    self.currentCaller = nil;
+    self.microphoneMuted = NO;
 }
 
 #pragma mark - Incoming-only calling
@@ -2454,10 +2569,10 @@ forCallWithUUID:(NSUUID *)uuid
             [self hangupSIPCall:call.callId];
         }
     }];
-    self.currentCallUUID = nil;
-    self.currentCaller = nil;
-    self.microphoneMuted = NO;
-    self.callState = CallWaveCallStateIdle;
+    // The provider was created with the main queue, so this is already there.
+    dispatchMain(^{
+        [self clearPublishedCallState];
+    });
 }
 
 - (void)provider:(CXProvider *)provider performStartCallAction:(CXStartCallAction *)action {

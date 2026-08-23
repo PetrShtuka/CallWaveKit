@@ -6,6 +6,25 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Fixed
+
+- Data races on the client's published properties. `currentCallUUID`,
+  `currentCaller`, `registrationError`, `configuration`, `provider`,
+  `defaultCallerName`, `pushPayloadParser` and the audio coordinator's
+  `currentAudioRoute` are object-typed and were written on one thread while
+  being read from another — from a PJSIP callback thread, from the SIP queue or
+  from whatever thread the host called a public method on. Unsynchronized, that
+  is an over-release and a crash, not merely a stale read; a regression test
+  that hammers both sides reproduces it in under a second. All published state
+  now goes through lock-protected accessors, and the call projection
+  (`callState`, `currentCallUUID`, `currentCaller`, `microphoneMuted`) is
+  written on the main queue only — `-stop` and `-providerDidReset:` used to
+  write it from the caller's thread. No public API change; see the Threading
+  section of `CallWaveKit/README.md` for the contract this now actually keeps.
+- The network path monitor, its handle and the `hasObservedPath` bookkeeping are
+  created, cancelled and observed on the SIP queue, so `-stop` racing a path
+  update can no longer cancel a monitor another thread is mid-callback on.
+
 ### Added
 
 - Session timers (RFC 4028) via `CallWaveConfiguration`: `sessionTimersMode`
