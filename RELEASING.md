@@ -34,9 +34,11 @@ shippable at all.
 ```
 
 Then work through [FIELD-TESTING.md](FIELD-TESTING.md) on a device against a real
-intercom. The unit tests cover none of the answer path, the push path, the audio
-session or the registration lifecycle — those only break in the field, and
-`pod spec lint` in step 4 checks packaging, not behaviour.
+intercom, filling in its run-record table as you go. The unit tests cover none of
+the answer path, the push path, the audio session or the registration lifecycle —
+those only break in the field, and `pod spec lint` in step 4 checks packaging,
+not behaviour. The record is part of the release commit: a scenario with a blank
+cell reads as passed to whoever looks next.
 
 For a release that only touches documentation or packaging, the field pass can be
 skipped — say so in the release notes rather than leaving it ambiguous.

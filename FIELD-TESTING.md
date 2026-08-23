@@ -17,6 +17,54 @@ also passed the simulator unit suite, generic device build, strict concurrency,
 CocoaPods lint and PJSIP binary verification. Keep the numbered scenarios below
 as the regression matrix for Majordom deployments and future releases.
 
+## Unreleased run record
+
+**Status: not run.** Nothing below may be ticked off from the Simulator, from a
+code reading or from a green CI run — none of those exercise PushKit, the lock
+screen or a real audio route, which is the entire reason this file exists. Fill
+the table in on the device and commit it in the same change as the release. An
+empty record is the honest state of this branch; an invented one is worse than
+no record at all.
+
+Since the last recorded pass (0.4.0, 2026-08-04) the answer path, the audio
+session and the account configuration have all moved, so this is not a
+formality:
+
+| What changed since 0.4.0 | Scenarios it puts at risk |
+| --- | --- |
+| Session timers (RFC 4028) on the account | 17, then 5 and 6 for the teardown paths |
+| `CallWaveAudioSessionCoordinator` took AVAudioSession off the client | 1, 2, 12, 15 |
+| Published state moved behind a lock; the call projection is main-queue only | 7, 9, 10, 14 |
+| 0.5.0: Opus, SHA-256 digest, QoS tagging, quality warnings | 12, 13, 16 |
+
+The rest of the list still has to be walked — a regression does not respect the
+diff — but those are the ones that would fail first.
+
+| # | Scenario | Result | Log attached | Notes |
+| --- | --- | --- | --- | --- |
+| 1 | Cold start, locked screen | | | |
+| 2 | Foreground and background | | | |
+| 3 | Opening the door | | | |
+| 4 | Declining | | | |
+| 5 | The intercom hangs up | | | |
+| 6 | Nobody answers | | | |
+| 7 | Ten calls in a row | | | |
+| 8 | Unregistering between calls | | | |
+| 9 | Two calls at once | | | |
+| 10 | Network handover mid-call | | | |
+| 11 | Push survival | | | |
+| 12 | Audio details | | | |
+| 13 | TLS, if the deployment uses it | | | |
+| 14 | Remote cancellation | | | |
+| 15 | Audio interruption and route loss | | | |
+| 16 | IPv6, NAT64 and TURN | | | |
+| 17 | Session timers | | | |
+
+Record alongside the table: the device and iOS version, the intercom or PBX
+model, the transport, the date and who ran it. A scenario that was skipped is
+written down as skipped, with the reason — a blank cell reads as "passed" to
+the next person and that is how a release ships untested.
+
 ## Setup
 
 - A physical iPhone. The Simulator has no PushKit and no usable audio route.
@@ -238,6 +286,27 @@ through each supported TURN transport. Repeat an old IPv4 intercom with
 - REGISTER and the incoming call complete on IPv6-only service.
 - RTP counters increase through TURN UDP, TCP and TLS.
 - Logs and `diagnosticsSnapshot()` contain no TURN username or password.
+
+### 17. Session timers
+
+Nothing in scenarios 1-16 keeps a call up long enough to see a refresher, so
+this one is new with the feature. Set `sessionTimerInterval` to its floor (90 s)
+so the exchange happens on a timescale a human can sit through, leave
+`sessionTimersMode` at `.optional`, and answer a call.
+
+- The `INVITE`/`200 OK` exchange carries `Session-Expires` and `Min-SE`, and
+  `Session-Expires` is never below `Min-SE`.
+- Past the interval a re-INVITE (or `UPDATE`) refresher goes out from whichever
+  side the negotiation made the refresher, and audio does not break across it.
+- Hold the call up for at least three refresh periods: the call must not drop,
+  and the refresher must not restart the media.
+- Then pull the intercom's power mid-call. The call is torn down at roughly the
+  session interval instead of hanging until the no-media watchdog — that is the
+  entire point of the feature — and CallKit clears.
+- Repeat once with `.required` against the deployment's own PBX. A PBX with no
+  `timer` support must be rejected outright rather than left in a half-set-up
+  call; if the Majordom PBX cannot do session timers, record that here and keep
+  `.optional` as the shipped default.
 
 ## Reporting a field failure
 
