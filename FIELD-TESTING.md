@@ -17,25 +17,31 @@ also passed the simulator unit suite, generic device build, strict concurrency,
 CocoaPods lint and PJSIP binary verification. Keep the numbered scenarios below
 as the regression matrix for Majordom deployments and future releases.
 
-## Unreleased run record
+## 0.6.0 run record
 
-**Status: not run.** Nothing below may be ticked off from the Simulator, from a
-code reading or from a green CI run — none of those exercise PushKit, the lock
-screen or a real audio route, which is the entire reason this file exists. Fill
-the table in on the device and commit it in the same change as the release. An
-empty record is the honest state of this branch; an invented one is worse than
-no record at all.
+**Status: not run. 0.6.0 must not be tagged until this table is filled in.**
+Nothing below may be ticked off from the Simulator, from a code reading or from
+a green CI run — none of those exercise PushKit, the lock screen or a real audio
+route, which is the entire reason this file exists. Fill the table in on the
+device and commit it before the tag. An empty record is the honest state of the
+release; an invented one is worse than no record at all.
 
 Since the last recorded pass (0.4.0, 2026-08-04) the answer path, the audio
-session and the account configuration have all moved, so this is not a
-formality:
+session, the call teardown and the account configuration have all moved, so this
+is not a formality:
 
 | What changed since 0.4.0 | Scenarios it puts at risk |
 | --- | --- |
+| The decline path stopped racing account deletion, and now logs | **4**, then 5, 6, 14 |
 | Session timers (RFC 4028) on the account | 17, then 5 and 6 for the teardown paths |
 | `CallWaveAudioSessionCoordinator` took AVAudioSession off the client | 1, 2, 12, 15 |
+| `CallWaveCallStateMachine` took the call projection off the client | 7, 9, 14 |
 | Published state moved behind a lock; the call projection is main-queue only | 7, 9, 10, 14 |
 | 0.5.0: Opus, SHA-256 digest, QoS tagging, quality warnings | 12, 13, 16 |
+
+Scenario 4 is the one to run first. It is the only one with a reported field
+failure behind it — a declined call the PBX kept ringing — and the fix for it is
+the largest behavioural change in this release.
 
 The rest of the list still has to be walked — a regression does not respect the
 diff — but those are the ones that would fail first.

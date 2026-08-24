@@ -1,6 +1,6 @@
 # Compatibility
 
-| Area | CallWaveKit 0.5 |
+| Area | CallWaveKit 0.6 |
 | --- | --- |
 | iOS | 15.0 or later |
 | Swift tools | 5.9 or later |
