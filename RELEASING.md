@@ -34,9 +34,11 @@ shippable at all.
 ```
 
 Then work through [FIELD-TESTING.md](FIELD-TESTING.md) on a device against a real
-intercom. The unit tests cover none of the answer path, the push path, the audio
-session or the registration lifecycle — those only break in the field, and
-`pod spec lint` in step 4 checks packaging, not behaviour.
+intercom, filling in its run-record table as you go. The unit tests cover none of
+the answer path, the push path, the audio session or the registration lifecycle —
+those only break in the field, and `pod spec lint` in step 4 checks packaging,
+not behaviour. The record is part of the release commit: a scenario with a blank
+cell reads as passed to whoever looks next.
 
 For a release that only touches documentation or packaging, the field pass can be
 skipped — say so in the release notes rather than leaving it ambiguous.
@@ -66,15 +68,17 @@ CocoaPods fail with a version mismatch, because `spec.source` resolves
 ### 3. Tag
 
 ```sh
-git checkout main && git pull
-git tag -a 0.4.1 -m "CallWaveKit 0.4.1"
-git push origin 0.4.1
+RELEASE_VERSION=0.5.0
+git checkout main
+git pull
+git tag -a "$RELEASE_VERSION" -m "CallWaveKit $RELEASE_VERSION"
+git push origin "$RELEASE_VERSION"
 ```
 
 Verify the tag and the podspec agree before going further:
 
 ```sh
-git show 0.4.1^{commit}:CallWaveKit.podspec | grep spec.version
+git show "$RELEASE_VERSION^{commit}:CallWaveKit.podspec" | grep spec.version
 ```
 
 ### 4. Validate against the published tag
@@ -114,7 +118,7 @@ needs.
 it. To attach it to a release instead:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.4.1
+./Scripts/package-pjsip-release.sh "$RELEASE_VERSION"
 ```
 
 The script prints the archive's checksum and the matching

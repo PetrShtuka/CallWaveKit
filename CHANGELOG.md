@@ -6,6 +6,67 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Fixed
+
+- A call declined while it was still ringing could leave the PBX with the call
+  up, even though the CallKit screen cleared cleanly. `pjsua_call_hangup` and
+  `pjsua_call_answer` return as soon as the final response is with the
+  transaction layer — the retransmissions and the peer's ACK come afterwards —
+  while `pjsua_acc_del` "always deletes the account regardless of active calls",
+  in PJSUA's own words. A host following the documented "unregister or logout
+  between calls" pattern deleted the account inside that window. `logout()`,
+  `stop()` and the account replacement inside `login(configuration:)` now drain
+  PJSUA's call teardown first, for up to a second, and use `pjsua_acc_del2`
+  rather than the forcing variant. `unregister()` is unchanged: it leaves the
+  account in place, which no in-flight INVITE transaction depends on.
+  `logout()` and `stop()` can therefore block their caller for up to a second
+  after a call — call them off the main queue.
+- `endCall(uuid:)` on a call that was never answered now sends `603 Decline`
+  explicitly instead of relying on `pjsua_call_hangup`'s inference from a zero
+  status code. The result on the wire is the same, but the inference was
+  invisible and `pjsua_call_hangup` is documented not to deliver
+  `on_call_tsx_state`, which made the rest of the exchange unobservable. The
+  library-owned CallKit path already chose explicitly; host-owned mode did not.
+- Data races on the client's published properties. `currentCallUUID`,
+  `currentCaller`, `registrationError`, `configuration`, `provider`,
+  `defaultCallerName`, `pushPayloadParser` and the audio coordinator's
+  `currentAudioRoute` are object-typed and were written on one thread while
+  being read from another — from a PJSIP callback thread, from the SIP queue or
+  from whatever thread the host called a public method on. Unsynchronized, that
+  is an over-release and a crash, not merely a stale read; a regression test
+  that hammers both sides reproduces it in under a second. All published state
+  now goes through lock-protected accessors — on the client, on
+  `CallWaveAudioSessionCoordinator` and on `CallWaveCallStateMachine`, which
+  owns the call projection. That projection (`callState`, `currentCallUUID`,
+  `currentCaller`, `microphoneMuted`) is additionally written on the main queue
+  only; `-stop` and `-providerDidReset:` used to write it from the caller's
+  thread. No public API change; see the Threading section of
+  `CallWaveKit/README.md` for the contract this now actually keeps.
+- The network path monitor, its handle and the `hasObservedPath` bookkeeping are
+  created, cancelled and observed on the SIP queue, so `-stop` racing a path
+  update can no longer cancel a monitor another thread is mid-callback on.
+
+### Added
+
+- The call teardown path is logged. It previously emitted nothing at all between
+  `endCall`/`declineCall` and the SIP message, so a lost final response and one
+  that was never generated looked identical from the host. There are now markers
+  for the method chosen and why (`declining call N with 603: … (never answered)`
+  versus `ending call N with BYE`), the `pj_status_t`, and — through a newly
+  wired `on_call_tsx_state` — the peer's side of it: the response going on the
+  wire, each retransmission that means no ACK came back, the ACK itself, and an
+  INVITE transaction that ended without one. `FIELD-TESTING.md` scenario 4 lists
+  the sequence to expect.
+- Session timers (RFC 4028) via `CallWaveConfiguration`: `sessionTimersMode`
+  (`.inactive`, `.optional`, `.always`, `.required`), `sessionTimerInterval`
+  (default 1800 s) and `sessionTimerMinimum` (default 90 s, clamped to the RFC
+  minimum). The default `.optional` mode advertises support and runs
+  re-INVITE refreshers whenever the peer negotiates them, so a call whose
+  remote side died silently (crash, power loss, vanished NAT binding) is torn
+  down instead of hanging until the media timeout.
+  Invalid interval combinations are normalized so `Session-Expires` is never
+  lower than `Min-SE`, and oversized values are capped to PJSIP's field width.
+
 ### Internal
 
 - AVAudioSession ownership moved out of `CallWaveClient` into a new internal

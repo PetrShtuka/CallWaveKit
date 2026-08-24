@@ -88,6 +88,48 @@ func provider(_ provider: CXProvider, didDeactivate session: AVAudioSession) {
 call. A host that keeps its provider private uses that callback to call
 `reportCall(with:endedAt:reason:)` itself.
 
+### Ending a ringing call and ending an established one
+
+`endCall(uuid:)` and `declineCall(uuid:)` both send whatever the call's own
+INVITE state calls for: a call that was never answered is closed with
+`603 Decline` — a final response to its still-open INVITE — and an established
+one with a BYE. The two entry points differ only in what the log says, so a
+`CXEndCallAction` handler that cannot tell the two apart can keep calling
+`endCall(uuid:)` for both. Use `declineCall(uuid:)` when the host does know the
+call was never answered and wants the log to record it as a rejection.
+
+The distinction still matters for what happens next. A BYE is a request inside
+an established dialog and the PBX answers it with a `200 OK`. A `603` is a
+response to an INVITE, and on UDP the peer confirms it with an ACK; until that
+ACK arrives the transaction keeps retransmitting. Neither is finished when the
+completion handler runs — see
+[Releasing the account while a call is still ending](#releasing-the-account-while-a-call-is-still-ending)
+before calling `logout()` or `stop()` next to it.
+
+Both paths are logged, in the `call` category:
+
+```
+[call] declining call 3 with 603: ended by the host (never answered, INVITE state EARLY)
+[call] 603 handed to the transport for call 3
+[call] call 3: 603 is on the wire, waiting for the ACK
+[call] call 3: the peer ACKed 603, the teardown reached it
+```
+
+A `603` that never reaches the PBX looks like this instead — the phone shows the
+same clean decline either way, so this is the only place the difference shows:
+
+```
+[call] call 3: retransmitting 603, the peer has not ACKed it
+[call] call 3: the INVITE transaction ended on 603 without an ACK. The peer
+       never confirmed the teardown and may still have the call up.
+```
+
+And a teardown that was never generated at all has neither, only:
+
+```
+[call] no SIP teardown for call 3 (ended by the host): PJSUA no longer knows this call
+```
+
 ## Engine settings
 
 Everything that belongs to the PJSUA runtime rather than to an account lives on
@@ -162,6 +204,35 @@ try calls.unregister()   // REGISTER Expires: 0; account and stack stay alive
 try calls.logout()       // also deletes the account; stack stays alive
 calls.stop()             // pjsua_destroy(), for teardown only
 ```
+
+### Releasing the account while a call is still ending
+
+Ending a call is not finished when `endCall(uuid:)`'s completion runs. PJSUA
+hands the BYE or the `603` to the transaction layer and returns; the
+retransmissions and the peer's acknowledgement happen afterwards, and PJSUA's
+own header says the hangup "will continue in the background". `pjsua_acc_del`,
+meanwhile, "always deletes the account regardless of active calls".
+
+So `logout()` and `stop()` wait for it. Both drain PJSUA's call teardown before
+deleting the account or destroying the runtime — up to one second, which covers
+a final response whose first packet was lost and had to be retransmitted — and
+log `call teardown finished`, or a warning naming how many calls were still
+going, if the wait expires. `login(configuration:)` drains the same way when
+replacing an account, because per-push credentials mean a new push can arrive
+while the previous call is still ending.
+
+Two consequences for the host:
+
+- **`logout()` and `stop()` can block the calling thread for up to a second**
+  after a call, so prefer calling them off the main queue. They return
+  immediately when nothing is tearing down, which is the usual case.
+- **`unregister()` does not drain and does not need to.** It sends
+  `REGISTER Expires: 0` and leaves the account in place, which no in-flight
+  INVITE transaction depends on.
+
+There is no ordering requirement left for the host: `endCall(uuid:)` followed by
+`logout()` on the next line is safe, because both go through the same serial SIP
+queue in that order and `logout()` waits for what `endCall` started.
 
 ## Answering: waiting for the INVITE, then letting the PBX settle
 
@@ -368,14 +439,43 @@ the same thing.
 
 ## Threading
 
-Every public method is safe to call from any thread. Internally the client keeps
-two rules: its own mutable state changes on the main queue, which is also where
-the delegate, the event observers and CallKit are driven; and every `pjsua_*`
-sequence the client initiates runs on one serial queue, so a "read the call
-info, then act on it" pair cannot interleave with another. PJSIP's own callback
-threads talk to PJSUA directly — a `180 Ringing` that waits for a queue hop
-arrives too late — and reach CallWaveKit state only through a lock-protected
-call registry.
+Every public method is safe to call from any thread, and so is every published
+property. Internally the client keeps three rules.
+
+**Every `pjsua_*` sequence the client initiates runs on one serial queue**, so a
+"read the call info, then act on it" pair cannot interleave with another. PJSIP's
+own callback threads talk to PJSUA directly — a `180 Ringing` that waits for a
+queue hop arrives too late — and reach CallWaveKit state only through the
+lock-protected call registry.
+
+**The call projection changes on the main queue.** `callState`,
+`currentCallUUID`, `currentCaller` and `microphoneMuted` belong to
+`CallWaveCallStateMachine`, which is written from the main queue and nowhere
+else — the same queue the delegate, the event observers and CallKit are driven
+on, so an observer never sees half of a transition. The machine's own accessors
+still take a lock, because the client's pass-throughs to them are read from any
+thread: `resolveCallForUUID:` backs every argument-less call action.
+
+**The rest of the published state is lock-protected rather than main-queue
+bound.** `isRunning`, `registrationState`, `registrationError` and
+`configuration` are written synchronously by `-start`, `-login…`, `-unregister`,
+`-logout` and `-stop`, because those methods return to a caller that reads them
+back immediately. Their accessors take a lock instead of relying on the calling
+thread, so reading them from a PJSIP callback thread — or writing
+`defaultCallerName` from one thread while another rings — is defined behaviour
+rather than a torn read or an over-release. The same applies to the audio
+coordinator's `currentAudioRoute`, which AVAudioSession republishes from its own
+notification thread.
+
+A property declared with a custom getter (`getter=isMicrophoneMuted`) has to
+have *that* name implemented; writing `-microphoneMuted` instead leaves the real
+getter auto-synthesized and unlocked. `CallWavePublishedStateConcurrencyTests`
+under `-enableThreadSanitizer YES` catches it.
+
+The properties that are read but never written after setup — `answerTimeout`,
+`acceptDelay`, `incomingCallTimeout`, `pushCompletionTimeout`, `dtmfMethod` —
+are plain scalars and are left unsynchronized on purpose. Set them before
+`-start`, as the quick start does.
 
 ## Host application settings
 

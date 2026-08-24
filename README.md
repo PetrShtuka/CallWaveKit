@@ -36,13 +36,13 @@ not grant or transfer a proprietary PJSIP licence.
 ### Swift Package Manager
 
 In Xcode: **File → Add Package Dependencies**, enter
-`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.4.1` or later,
+`https://github.com/PetrShtuka/CallWaveKit.git`, pick version `0.5.0` or later,
 and add the `CallWaveKit` product to your application target.
 
 Or in a `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.4.1")
+.package(url: "https://github.com/PetrShtuka/CallWaveKit.git", from: "0.5.0")
 ```
 
 The product vends two modules: `CallWaveKit` (the Objective-C API) and
@@ -53,7 +53,7 @@ SwiftPM downloads the checksum-pinned `PJSIP.xcframework` release asset, with
 ### CocoaPods
 
 ```ruby
-pod 'CallWaveKit', '~> 0.4'
+pod 'CallWaveKit', '~> 0.5'
 ```
 
 Both modules land in a single `CallWaveKit` module under CocoaPods, so
@@ -63,7 +63,7 @@ To track the repository directly instead of the published pod — an unreleased
 fix, say — point at the tag:
 
 ```ruby
-pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.4.1'
+pod 'CallWaveKit', git: 'https://github.com/PetrShtuka/CallWaveKit.git', tag: '0.5.0'
 ```
 
 ## Host application settings
@@ -215,7 +215,7 @@ SwiftPM releases use an immutable binary asset so package consumers do not
 download the 21 MB framework through Git history. To package a rebuilt binary:
 
 ```sh
-./Scripts/package-pjsip-release.sh 0.4.1
+./Scripts/package-pjsip-release.sh 0.5.0
 ```
 
 The script prints the archive checksum and the `.binaryTarget(url:checksum:)`

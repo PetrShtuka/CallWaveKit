@@ -17,6 +17,54 @@ also passed the simulator unit suite, generic device build, strict concurrency,
 CocoaPods lint and PJSIP binary verification. Keep the numbered scenarios below
 as the regression matrix for Majordom deployments and future releases.
 
+## Unreleased run record
+
+**Status: not run.** Nothing below may be ticked off from the Simulator, from a
+code reading or from a green CI run — none of those exercise PushKit, the lock
+screen or a real audio route, which is the entire reason this file exists. Fill
+the table in on the device and commit it in the same change as the release. An
+empty record is the honest state of this branch; an invented one is worse than
+no record at all.
+
+Since the last recorded pass (0.4.0, 2026-08-04) the answer path, the audio
+session and the account configuration have all moved, so this is not a
+formality:
+
+| What changed since 0.4.0 | Scenarios it puts at risk |
+| --- | --- |
+| Session timers (RFC 4028) on the account | 17, then 5 and 6 for the teardown paths |
+| `CallWaveAudioSessionCoordinator` took AVAudioSession off the client | 1, 2, 12, 15 |
+| Published state moved behind a lock; the call projection is main-queue only | 7, 9, 10, 14 |
+| 0.5.0: Opus, SHA-256 digest, QoS tagging, quality warnings | 12, 13, 16 |
+
+The rest of the list still has to be walked — a regression does not respect the
+diff — but those are the ones that would fail first.
+
+| # | Scenario | Result | Log attached | Notes |
+| --- | --- | --- | --- | --- |
+| 1 | Cold start, locked screen | | | |
+| 2 | Foreground and background | | | |
+| 3 | Opening the door | | | |
+| 4 | Declining | | | |
+| 5 | The intercom hangs up | | | |
+| 6 | Nobody answers | | | |
+| 7 | Ten calls in a row | | | |
+| 8 | Unregistering between calls | | | |
+| 9 | Two calls at once | | | |
+| 10 | Network handover mid-call | | | |
+| 11 | Push survival | | | |
+| 12 | Audio details | | | |
+| 13 | TLS, if the deployment uses it | | | |
+| 14 | Remote cancellation | | | |
+| 15 | Audio interruption and route loss | | | |
+| 16 | IPv6, NAT64 and TURN | | | |
+| 17 | Session timers | | | |
+
+Record alongside the table: the device and iOS version, the intercom or PBX
+model, the transport, the date and who ran it. A scenario that was skipped is
+written down as skipped, with the reason — a blank cell reads as "passed" to
+the next person and that is how a release ships untested.
+
 ## Setup
 
 - A physical iPhone. The Simulator has no PushKit and no usable audio route.
@@ -105,10 +153,44 @@ Three separate cases, all of which must leave the intercom silent:
    UUID afterwards, and no call left ringing on the PBX.
 3. Ignore the call entirely and let CallKit time it out.
 
-Case 2 is a regression test: it failed in 0.3.0 and earlier, where the decline
-was dropped because the SIP call did not exist yet, and the late INVITE then rang
-as a second call. Fixed in 0.3.1 — the marker that proves the fix ran is
-`[call] INVITE for call … arrived after the user rejected it; answered 603`.
+"Leaves the intercom silent" cannot be read off the phone: the CallKit screen
+clears identically whether the PBX got the final response or not. Watch the PBX,
+and confirm it against the log.
+
+**Case 1 markers.** The full sequence, in the `call` category:
+
+```
+[call] declining call N with 603: … (never answered, INVITE state EARLY)
+[call] 603 handed to the transport for call N
+[call] call N: 603 is on the wire, waiting for the ACK
+[call] call N: the peer ACKed 603, the teardown reached it
+```
+
+The last line is the one that proves it. Its absence is the failure, and there
+are two shapes of it:
+
+- `[call] call N: retransmitting 603, the peer has not ACKed it`, then
+  `[call] call N: the INVITE transaction ended on 603 without an ACK` — the
+  response was generated and lost. Suspect the network, or something that tore
+  the account down underneath it.
+- No `declining call N` line at all — the response was never generated. Suspect
+  the call binding: check for `[call] no SIP teardown for call N`.
+
+Run case 1 at least once with the host calling `logout()` immediately after
+`endCall(uuid:)`, which is what the documentation shows. `[call] waiting for N
+call(s) to finish tearing down` followed by `[call] call teardown finished` must
+appear between them. `[call] N call(s) still tearing down after 1000 ms` means
+the drain expired and the account went away regardless — record the log, this is
+the case that leaves a PBX ringing.
+
+**Case 2** is a regression test: it failed in 0.3.0 and earlier, where the
+decline was dropped because the SIP call did not exist yet, and the late INVITE
+then rang as a second call. Fixed in 0.3.1 — the marker that proves the fix ran
+is `[call] INVITE for call … arrived after the user rejected it; answered 603`.
+
+**Case 3** ends on the ring timeout rather than a decline, so the final response
+is `480`, not `603`: `[call] declining call N with 480: ring timeout`, then the
+same on-the-wire and ACK pair.
 
 ### 5. The intercom hangs up
 
@@ -238,6 +320,27 @@ through each supported TURN transport. Repeat an old IPv4 intercom with
 - REGISTER and the incoming call complete on IPv6-only service.
 - RTP counters increase through TURN UDP, TCP and TLS.
 - Logs and `diagnosticsSnapshot()` contain no TURN username or password.
+
+### 17. Session timers
+
+Nothing in scenarios 1-16 keeps a call up long enough to see a refresher, so
+this one is new with the feature. Set `sessionTimerInterval` to its floor (90 s)
+so the exchange happens on a timescale a human can sit through, leave
+`sessionTimersMode` at `.optional`, and answer a call.
+
+- The `INVITE`/`200 OK` exchange carries `Session-Expires` and `Min-SE`, and
+  `Session-Expires` is never below `Min-SE`.
+- Past the interval a re-INVITE (or `UPDATE`) refresher goes out from whichever
+  side the negotiation made the refresher, and audio does not break across it.
+- Hold the call up for at least three refresh periods: the call must not drop,
+  and the refresher must not restart the media.
+- Then pull the intercom's power mid-call. The call is torn down at roughly the
+  session interval instead of hanging until the no-media watchdog — that is the
+  entire point of the feature — and CallKit clears.
+- Repeat once with `.required` against the deployment's own PBX. A PBX with no
+  `timer` support must be rejected outright rather than left in a half-set-up
+  call; if the Majordom PBX cannot do session timers, record that here and keep
+  `.optional` as the shipped default.
 
 ## Reporting a field failure
 

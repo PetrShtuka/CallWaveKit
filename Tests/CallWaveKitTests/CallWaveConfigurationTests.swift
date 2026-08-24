@@ -119,6 +119,9 @@ final class CallWaveConfigurationTests: XCTestCase {
         XCTAssertEqual(configuration.registrationExpiry, 300)
         XCTAssertEqual(configuration.keepAliveInterval, 15)
         XCTAssertEqual(configuration.mediaEncryption, .disabled)
+        XCTAssertEqual(configuration.sessionTimersMode, .optional)
+        XCTAssertEqual(configuration.sessionTimerInterval, 1800)
+        XCTAssertEqual(configuration.sessionTimerMinimum, 90)
         XCTAssertTrue(configuration.additionalRegistrationHeaders.isEmpty)
     }
 
@@ -143,6 +146,58 @@ final class CallWaveConfigurationTests: XCTestCase {
         XCTAssertEqual(configuration.keepAliveInterval, 30)
         XCTAssertEqual(configuration.mediaEncryption, .mandatory)
         XCTAssertEqual(configuration.additionalRegistrationHeaders["X-Tenant"], "42")
+    }
+
+    func testBuilderKeepsSessionTimerValues() {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimersMode = .always
+            builder.sessionTimerInterval = 600
+            builder.sessionTimerMinimum = 120
+        }
+
+        XCTAssertEqual(configuration.sessionTimersMode, .always)
+        XCTAssertEqual(configuration.sessionTimerInterval, 600)
+        XCTAssertEqual(configuration.sessionTimerMinimum, 120)
+    }
+
+    func testSessionTimerMinimumIsClampedToTheRFCMinimum() {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimerMinimum = 30
+        }
+
+        XCTAssertEqual(configuration.sessionTimerMinimum, 90)
+    }
+
+    func testSessionTimerIntervalIsNeverBelowMinimum() {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimerInterval = 60
+            builder.sessionTimerMinimum = 120
+        }
+
+        XCTAssertEqual(configuration.sessionTimerInterval, 120)
+        XCTAssertEqual(configuration.sessionTimerMinimum, 120)
+    }
+
+    func testSessionTimerValuesFitPJSIPUnsignedFields() {
+        let configuration = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimerInterval = .max
+            builder.sessionTimerMinimum = .max
+        }
+
+        XCTAssertEqual(configuration.sessionTimerInterval, UInt(UInt32.max))
+        XCTAssertEqual(configuration.sessionTimerMinimum, UInt(UInt32.max))
     }
 
     func testApplyingChangesOneFieldAndKeepsTheRest() {
@@ -190,10 +245,29 @@ final class CallWaveConfigurationTests: XCTestCase {
         }
         let encrypted = plain.applying { $0.mediaEncryption = .mandatory }
         let proxied = plain.applying { $0.outboundProxy = "sip:proxy.example.com" }
+        let timed = plain.applying { $0.sessionTimersMode = .always }
 
         XCTAssertFalse(plain.isEqual(to: encrypted))
         XCTAssertFalse(plain.isEqual(to: proxied))
+        XCTAssertFalse(plain.isEqual(to: timed))
         XCTAssertTrue(plain.isEqual(to: plain.applying { _ in }))
+    }
+
+    func testApplyingPreservesSessionTimerSettings() {
+        let timed = CallWaveConfiguration { builder in
+            builder.host = "sip.example.com"
+            builder.username = "1001"
+            builder.password = "secret"
+            builder.sessionTimersMode = .required
+            builder.sessionTimerInterval = 900
+            builder.sessionTimerMinimum = 180
+        }
+
+        let rotated = timed.applying { $0.password = "rotated" }
+
+        XCTAssertEqual(rotated.sessionTimersMode, .required)
+        XCTAssertEqual(rotated.sessionTimerInterval, 900)
+        XCTAssertEqual(rotated.sessionTimerMinimum, 180)
     }
 
     func testEqualityAgainstNilIsFalse() {
