@@ -8,6 +8,38 @@ bump may contain breaking changes, and each one is listed below.
 
 ### Fixed
 
+- A call declined while it was still ringing could leave the PBX with the call
+  up, even though the CallKit screen cleared cleanly. `pjsua_call_hangup` and
+  `pjsua_call_answer` return as soon as the final response is with the
+  transaction layer — the retransmissions and the peer's ACK come afterwards —
+  while `pjsua_acc_del` "always deletes the account regardless of active calls",
+  in PJSUA's own words. A host following the documented "unregister or logout
+  between calls" pattern deleted the account inside that window. `logout()`,
+  `stop()` and the account replacement inside `login(configuration:)` now drain
+  PJSUA's call teardown first, for up to a second, and use `pjsua_acc_del2`
+  rather than the forcing variant. `unregister()` is unchanged: it leaves the
+  account in place, which no in-flight INVITE transaction depends on.
+  `logout()` and `stop()` can therefore block their caller for up to a second
+  after a call — call them off the main queue.
+- `endCall(uuid:)` on a call that was never answered now sends `603 Decline`
+  explicitly instead of relying on `pjsua_call_hangup`'s inference from a zero
+  status code. The result on the wire is the same, but the inference was
+  invisible and `pjsua_call_hangup` is documented not to deliver
+  `on_call_tsx_state`, which made the rest of the exchange unobservable. The
+  library-owned CallKit path already chose explicitly; host-owned mode did not.
+
+### Added
+
+- The call teardown path is logged. It previously emitted nothing at all between
+  `endCall`/`declineCall` and the SIP message, so a lost final response and one
+  that was never generated looked identical from the host. There are now markers
+  for the method chosen and why (`declining call N with 603: … (never answered)`
+  versus `ending call N with BYE`), the `pj_status_t`, and — through a newly
+  wired `on_call_tsx_state` — the peer's side of it: the response going on the
+  wire, each retransmission that means no ACK came back, the ACK itself, and an
+  INVITE transaction that ended without one. `FIELD-TESTING.md` scenario 4 lists
+  the sequence to expect.
+
 - Data races on the client's published properties. `currentCallUUID`,
   `currentCaller`, `registrationError`, `configuration`, `provider`,
   `defaultCallerName`, `pushPayloadParser` and the audio coordinator's

@@ -19,6 +19,8 @@
 #import <UIKit/UIKit.h>
 #import <os/lock.h>
 #import <pthread.h>
+#import <stdatomic.h>
+#import <unistd.h>
 #if __has_include(<PJSIP/pjsua.h>)
 #import <PJSIP/pjsua.h>
 #else
@@ -33,6 +35,12 @@ static const NSTimeInterval CallWaveDefaultAnswerTimeout = 10.0;
 static const NSTimeInterval CallWaveDefaultIncomingCallTimeout = 60.0;
 static const NSTimeInterval CallWaveDefaultPushCompletionTimeout = 4.0;
 static const NSUInteger CallWaveDTMFDurationMilliseconds = 160;
+/// How long the engine waits for PJSUA to finish tearing calls down before it
+/// deletes the account or destroys the runtime. One SIP T1 (500 ms) plus a
+/// round trip, so a final response whose first packet was lost still gets its
+/// one retransmission in.
+static const NSTimeInterval CallWaveTeardownDrainTimeout = 1.0;
+static const NSTimeInterval CallWaveTeardownPollInterval = 0.02;
 
 /// Identifies `sipQueue` from inside a block, so a synchronous hop onto a queue
 /// the caller is already running on becomes a plain call instead of a deadlock.
@@ -48,9 +56,17 @@ static pj_pool_t *gAccountHeaderPool = NULL;
 static NSUInteger gCreatedTransports = 0;
 static __weak CallWaveClient *gActiveClient = nil;
 
+/// Whether the peer has ACKed the non-2xx final response of the call in that
+/// slot. Written from PJSIP's worker thread and from `sipQueue`, which is why
+/// it is atomic; read only to tell "the peer confirmed the teardown" apart from
+/// "the transaction gave up without ever hearing back".
+static _Atomic(bool) gFinalResponseAcked[PJSUA_MAX_CALLS];
+
 static void onIncomingCall(pjsua_acc_id accId, pjsua_call_id callId, pjsip_rx_data *rdata);
 static void onCallState(pjsua_call_id callId, pjsip_event *event);
 static void onCallMediaState(pjsua_call_id callId);
+static void onCallTsxState(pjsua_call_id callId, pjsip_transaction *tsx,
+                           pjsip_event *event);
 static void onRegistrationState(pjsua_acc_id accId);
 static void onPJLog(int level, const char *data, int length);
 
@@ -90,6 +106,78 @@ static BOOL ensurePJThreadRegistered(const char *name) {
         return NO;
     }
     return YES;
+}
+
+/// Waits for PJSUA to finish tearing down every call it still holds.
+///
+/// `pjsua_call_hangup` and `pjsua_call_answer` return as soon as the message is
+/// with the transaction layer: PJSUA's own header says the hangup process
+/// "will continue in the background", and `pjsua_call_get_count()` is
+/// documented to include "calls that are no longer active but still in the
+/// process of hanging up". A declined call sits in exactly that state while its
+/// `603` waits for an ACK.
+///
+/// This matters because `pjsua_acc_del` "always deletes the account regardless
+/// of active calls" — PJSUA's wording — and its own documentation says to hang
+/// up first and wait "until the calls are fully disconnected". Deleting the
+/// account inside that window is how a decline the phone showed as clean leaves
+/// the PBX still ringing.
+///
+/// Must run on `sipQueue`. PJSIP polls its ioqueue on its own worker thread, so
+/// parking this one does not stall the ACK being waited for.
+static BOOL drainCallTeardown(NSTimeInterval timeout) {
+    if (!gPJSUAStarted) {
+        return YES;
+    }
+    unsigned remaining = pjsua_call_get_count();
+    if (remaining == 0) {
+        return YES;
+    }
+
+    CWLogInfo(CallWaveLogCategoryCall,
+              @"waiting for %u call(s) to finish tearing down", remaining);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX(timeout, 0)];
+    while ((remaining = pjsua_call_get_count()) > 0) {
+        if (deadline.timeIntervalSinceNow <= 0) {
+            CWLogWarning(CallWaveLogCategoryCall,
+                         @"%u call(s) still tearing down after %.0f ms; going ahead anyway. "
+                         @"The peer may never receive the final response, and a PBX that "
+                         @"missed it keeps the call up.",
+                         remaining, timeout * 1000.0);
+            return NO;
+        }
+        usleep((useconds_t)(CallWaveTeardownPollInterval * USEC_PER_SEC));
+    }
+    CWLogInfo(CallWaveLogCategoryCall, @"call teardown finished");
+    return YES;
+}
+
+/// Deletes the current account after letting its calls finish. Uses
+/// `pjsua_acc_del2` with `force` clear so PJSUA itself gets the last word on
+/// whether a call is still using the account; only a drain that timed out falls
+/// back to the forcing variant, and it says so.
+///
+/// Must run on `sipQueue`.
+static void deleteAccountLocked(void) {
+    if (gAccountId == PJSUA_INVALID_ID) {
+        return;
+    }
+    drainCallTeardown(CallWaveTeardownDrainTimeout);
+
+    pjsua_acc_del_param parameters;
+    pjsua_acc_del_param_default(&parameters);
+    parameters.force = PJ_FALSE;
+    pj_status_t status = pjsua_acc_del2(gAccountId, &parameters);
+    if (status == PJ_EBUSY) {
+        CWLogWarning(CallWaveLogCategorySIP,
+                     @"deleting the account while a call is still tearing down");
+        parameters.force = PJ_TRUE;
+        status = pjsua_acc_del2(gAccountId, &parameters);
+    }
+    if (status != PJ_SUCCESS) {
+        CWLogError(CallWaveLogCategorySIP, @"account deletion failed (%d)", status);
+    }
+    gAccountId = PJSUA_INVALID_ID;
 }
 
 static NSString *stringFromPJString(pj_str_t value) {
@@ -663,6 +751,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     config.cb.on_incoming_call = &onIncomingCall;
     config.cb.on_call_state = &onCallState;
     config.cb.on_call_media_state = &onCallMediaState;
+    config.cb.on_call_tsx_state = &onCallTsxState;
     config.cb.on_reg_state = &onRegistrationState;
 
     NSString *userAgent = engine.userAgent;
@@ -856,9 +945,10 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     }
 
     if (accountValid) {
+        // Per-push credentials mean this runs while the previous call may still
+        // be tearing down, so it drains first like -logout does.
         pjsua_acc_set_registration(gAccountId, PJ_FALSE);
-        pjsua_acc_del(gAccountId);
-        gAccountId = PJSUA_INVALID_ID;
+        deleteAccountLocked();
     }
     if (gAccountHeaderPool != NULL) {
         pj_pool_release(gAccountHeaderPool);
@@ -1043,8 +1133,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     [self performSIPSync:^{
         ensurePJThreadRegistered("CallWaveLogout");
         pjsua_acc_set_registration(gAccountId, PJ_FALSE);
-        pjsua_acc_del(gAccountId);
-        gAccountId = PJSUA_INVALID_ID;
+        deleteAccountLocked();
         if (gAccountHeaderPool != NULL) {
             pj_pool_release(gAccountHeaderPool);
             gAccountHeaderPool = NULL;
@@ -1061,9 +1150,12 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         ensurePJThreadRegistered("CallWaveTeardown");
         if (gAccountId != PJSUA_INVALID_ID && pjsua_acc_is_valid(gAccountId)) {
             pjsua_acc_set_registration(gAccountId, PJ_FALSE);
-            pjsua_acc_del(gAccountId);
+            deleteAccountLocked();
         }
         gAccountId = PJSUA_INVALID_ID;
+        // A call still in the middle of its teardown outlives the account but
+        // not the runtime, so the wait has to happen here too.
+        drainCallTeardown(CallWaveTeardownDrainTimeout);
         if (gAccountHeaderPool != NULL) {
             pj_pool_release(gAccountHeaderPool);
             gAccountHeaderPool = NULL;
@@ -1094,7 +1186,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         ensurePJThreadRegistered("CallWaveStop");
         for (CallWaveCall *call in calls) {
             if (call.callId != CallWaveSIPCallIdInvalid && pjsua_call_is_active(call.callId)) {
-                pjsua_call_hangup(call.callId, 0, NULL, NULL);
+                [self endSIPCall:call.callId
+                   declineStatus:PJSIP_SC_DECLINE
+                          reason:@"the engine is stopping"];
             }
         }
         [self stopPathMonitorLocked];
@@ -1506,22 +1600,73 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     return status == PJ_SUCCESS;
 }
 
+/// Ends a call with the SIP method its state calls for, and says so in the log.
+///
+/// A call that was never answered still has an open INVITE transaction, so it
+/// is closed with a final response — `declineStatus`, which is what the peer
+/// sees. Anything past that has a dialog, so it gets a BYE.
+///
+/// PJSUA would infer the same split from `pjsua_call_hangup(id, 0, …)`: its
+/// header says a zero code sends "603/Decline" when rejecting an incoming call.
+/// Two things make the inference a bad deal. It is invisible — nothing in the
+/// log says which of the two happened — and `pjsua_call_hangup` is documented
+/// not to deliver `on_call_tsx_state`, so the peer's ACK is unobservable and a
+/// final response that was lost looks exactly like one that was never
+/// generated. Choosing here, and answering through `pjsua_call_answer` when the
+/// call is still ringing, is what makes `onCallTsxState` below able to report
+/// the rest of the exchange.
+///
 /// Must run on `sipQueue`.
-- (BOOL)rejectSIPCall:(pjsua_call_id)callId withStatus:(pjsip_status_code)statusCode {
+- (BOOL)endSIPCall:(pjsua_call_id)callId
+     declineStatus:(pjsip_status_code)declineStatus
+            reason:(NSString *)reason {
     if (!gPJSUAStarted || callId == PJSUA_INVALID_ID) {
+        CWLogWarning(CallWaveLogCategoryCall,
+                     @"no SIP teardown for call %d (%@): the engine is not running",
+                     callId, reason);
         return NO;
     }
-    ensurePJThreadRegistered("CallWaveDecline");
-    return pjsua_call_answer(callId, statusCode, NULL, NULL) == PJ_SUCCESS;
-}
+    ensurePJThreadRegistered("CallWaveTeardown");
 
-/// Must run on `sipQueue`.
-- (BOOL)hangupSIPCall:(pjsua_call_id)callId {
-    if (!gPJSUAStarted || callId == PJSUA_INVALID_ID) {
+    pjsua_call_info info;
+    if (pjsua_call_get_info(callId, &info) != PJ_SUCCESS) {
+        CWLogWarning(CallWaveLogCategoryCall,
+                     @"no SIP teardown for call %d (%@): PJSUA no longer knows this call",
+                     callId, reason);
         return NO;
     }
-    ensurePJThreadRegistered("CallWaveHangup");
-    return pjsua_call_hangup(callId, 0, NULL, NULL) == PJ_SUCCESS;
+
+    BOOL neverAnswered = info.state == PJSIP_INV_STATE_INCOMING ||
+                         info.state == PJSIP_INV_STATE_EARLY;
+    if (callId >= 0 && callId < (pjsua_call_id)PJSUA_MAX_CALLS) {
+        atomic_store(&gFinalResponseAcked[callId], false);
+    }
+
+    pj_status_t status;
+    if (neverAnswered) {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"declining call %d with %d: %@ (never answered, INVITE state %s)",
+                  callId, (int)declineStatus, reason, pjsip_inv_state_name(info.state));
+        status = pjsua_call_answer(callId, declineStatus, NULL, NULL);
+    } else {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"ending call %d with BYE: %@ (INVITE state %s)",
+                  callId, reason, pjsip_inv_state_name(info.state));
+        status = pjsua_call_hangup(callId, 0, NULL, NULL);
+    }
+
+    if (status == PJ_SUCCESS) {
+        // Both APIs return once the message is with the transaction layer. The
+        // retransmissions and the peer's ACK come later, on PJSIP's thread.
+        CWLogInfo(CallWaveLogCategoryCall, @"%@ handed to the transport for call %d",
+                  neverAnswered ? [NSString stringWithFormat:@"%d", (int)declineStatus] : @"BYE",
+                  callId);
+    } else {
+        CWLogError(CallWaveLogCategoryCall, @"%@ failed for call %d (%d)",
+                   neverAnswered ? [NSString stringWithFormat:@"%d", (int)declineStatus] : @"BYE",
+                   callId, status);
+    }
+    return status == PJ_SUCCESS;
 }
 
 - (void)complete:(CallWaveCompletion)completion error:(NSError *)error {
@@ -1763,9 +1908,10 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         }
 
         [self performSIPAsync:^{
-            BOOL succeeded = declining
-                ? [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE]
-                : [self hangupSIPCall:callId];
+            BOOL succeeded = [self endSIPCall:callId
+                                declineStatus:PJSIP_SC_DECLINE
+                                       reason:declining ? @"declined by the host"
+                                                        : @"ended by the host"];
             dispatchMain(^{
                 [self publishCallState:CallWaveCallStateEnded forUUID:target];
                 [self clearCallWithUUID:target];
@@ -2403,7 +2549,9 @@ forCallWithUUID:(NSUUID *)uuid
         if (call.isCancelledBeforeInvite) {
             if (callId != CallWaveSIPCallIdInvalid) {
                 [self performSIPAsync:^{
-                    [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE];
+                    [self endSIPCall:callId
+                       declineStatus:PJSIP_SC_DECLINE
+                              reason:@"already rejected before its INVITE arrived"];
                 }];
             }
             [self complete:completion error:nil];
@@ -2446,7 +2594,9 @@ forCallWithUUID:(NSUUID *)uuid
                 [self.registry removeCallWithUUID:uuid];
                 if (boundId != CallWaveSIPCallIdInvalid) {
                     [self performSIPAsync:^{
-                        [self rejectSIPCall:boundId withStatus:PJSIP_SC_TEMPORARILY_UNAVAILABLE];
+                        [self endSIPCall:boundId
+                           declineStatus:PJSIP_SC_TEMPORARILY_UNAVAILABLE
+                                  reason:@"CallKit refused to report the call"];
                     }];
                 }
                 [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
@@ -2499,7 +2649,9 @@ forCallWithUUID:(NSUUID *)uuid
         } else {
             pjsua_call_id callId = call.callId;
             [self performSIPAsync:^{
-                [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE];
+                [self endSIPCall:callId
+                   declineStatus:PJSIP_SC_DECLINE
+                          reason:@"retracted by the server"];
             }];
         }
         CWLogInfo(CallWaveLogCategoryPush, @"incoming call %@ was retracted by the server",
@@ -2534,7 +2686,9 @@ forCallWithUUID:(NSUUID *)uuid
         pjsua_call_id callId = call.callId;
         if (callId != CallWaveSIPCallIdInvalid) {
             [self performSIPAsync:^{
-                [self rejectSIPCall:callId withStatus:PJSIP_SC_TEMPORARILY_UNAVAILABLE];
+                [self endSIPCall:callId
+                   declineStatus:PJSIP_SC_TEMPORARILY_UNAVAILABLE
+                          reason:@"ring timeout"];
             }];
         }
         [self reportCallEndedWithUUID:uuid reason:CXCallEndedReasonUnanswered];
@@ -2566,7 +2720,9 @@ forCallWithUUID:(NSUUID *)uuid
     NSArray<CallWaveCall *> *calls = [self.registry removeAllCalls];
     [self performSIPAsync:^{
         for (CallWaveCall *call in calls) {
-            [self hangupSIPCall:call.callId];
+            [self endSIPCall:call.callId
+               declineStatus:PJSIP_SC_DECLINE
+                      reason:@"the CallKit provider reset"];
         }
     }];
     // The provider was created with the main queue, so this is already there.
@@ -2602,13 +2758,13 @@ forCallWithUUID:(NSUUID *)uuid
     BOOL ringing = call != nil && call.state == CallWaveCallStateIncoming;
     if (callId != CallWaveSIPCallIdInvalid) {
         [self performSIPAsync:^{
-            // A call the user rejected while it was ringing gets `603 Decline`;
-            // an established one gets BYE.
-            if (ringing) {
-                [self rejectSIPCall:callId withStatus:PJSIP_SC_DECLINE];
-            } else {
-                [self hangupSIPCall:callId];
-            }
+            // -endSIPCall: picks `603 Decline` or BYE from the INVITE state
+            // itself, which is more reliable than this projection of it; the
+            // flag only distinguishes the two in the log.
+            [self endSIPCall:callId
+               declineStatus:PJSIP_SC_DECLINE
+                      reason:ringing ? @"rejected from the CallKit screen"
+                                     : @"ended from the CallKit screen"];
         }];
     }
     [action fulfill];
@@ -3040,6 +3196,60 @@ static void onCallState(pjsua_call_id callId, pjsip_event *event) {
 
 static void onCallMediaState(pjsua_call_id callId) {
     [gActiveClient handleMediaStateForCall:callId];
+}
+
+/// Reports what happened to a teardown after CallWaveKit handed it over.
+///
+/// The INVITE server transaction is the only one that says anything useful
+/// here: after a non-2xx final response it sits in COMPLETED, retransmitting on
+/// a timer until the peer ACKs, and only then moves to CONFIRMED. Without these
+/// lines a host cannot tell a `603` that was lost on the way to the PBX from a
+/// `603` that was never generated — and on UDP, with the PBX still ringing and
+/// the phone showing a clean decline, that is the whole question.
+static void onCallTsxState(pjsua_call_id callId, pjsip_transaction *tsx,
+                           pjsip_event *event) {
+    if (tsx == NULL || tsx->role != PJSIP_ROLE_UAS ||
+        tsx->method.id != PJSIP_INVITE_METHOD) {
+        return;
+    }
+    // 1xx belongs to the ringing path and 2xx to the answer path; both are
+    // logged where they are sent.
+    int code = tsx->status_code;
+    if (code < 300) {
+        return;
+    }
+    BOOL tracked = callId >= 0 && callId < (pjsua_call_id)PJSUA_MAX_CALLS;
+
+    switch (tsx->state) {
+        case PJSIP_TSX_STATE_COMPLETED:
+            if (event != NULL && event->type == PJSIP_EVENT_TIMER) {
+                CWLogWarning(CallWaveLogCategoryCall,
+                             @"call %d: retransmitting %d, the peer has not ACKed it",
+                             callId, code);
+            } else {
+                CWLogInfo(CallWaveLogCategoryCall,
+                          @"call %d: %d is on the wire, waiting for the ACK", callId, code);
+            }
+            break;
+        case PJSIP_TSX_STATE_CONFIRMED:
+            if (tracked) {
+                atomic_store(&gFinalResponseAcked[callId], true);
+            }
+            CWLogInfo(CallWaveLogCategoryCall,
+                      @"call %d: the peer ACKed %d, the teardown reached it", callId, code);
+            break;
+        case PJSIP_TSX_STATE_TERMINATED:
+            if (tracked && atomic_load(&gFinalResponseAcked[callId])) {
+                break;
+            }
+            CWLogError(CallWaveLogCategoryCall,
+                       @"call %d: the INVITE transaction ended on %d without an ACK. "
+                       @"The peer never confirmed the teardown and may still have the "
+                       @"call up.", callId, code);
+            break;
+        default:
+            break;
+    }
 }
 
 static void onRegistrationState(pjsua_acc_id accId) {

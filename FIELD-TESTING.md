@@ -153,10 +153,44 @@ Three separate cases, all of which must leave the intercom silent:
    UUID afterwards, and no call left ringing on the PBX.
 3. Ignore the call entirely and let CallKit time it out.
 
-Case 2 is a regression test: it failed in 0.3.0 and earlier, where the decline
-was dropped because the SIP call did not exist yet, and the late INVITE then rang
-as a second call. Fixed in 0.3.1 — the marker that proves the fix ran is
-`[call] INVITE for call … arrived after the user rejected it; answered 603`.
+"Leaves the intercom silent" cannot be read off the phone: the CallKit screen
+clears identically whether the PBX got the final response or not. Watch the PBX,
+and confirm it against the log.
+
+**Case 1 markers.** The full sequence, in the `call` category:
+
+```
+[call] declining call N with 603: … (never answered, INVITE state EARLY)
+[call] 603 handed to the transport for call N
+[call] call N: 603 is on the wire, waiting for the ACK
+[call] call N: the peer ACKed 603, the teardown reached it
+```
+
+The last line is the one that proves it. Its absence is the failure, and there
+are two shapes of it:
+
+- `[call] call N: retransmitting 603, the peer has not ACKed it`, then
+  `[call] call N: the INVITE transaction ended on 603 without an ACK` — the
+  response was generated and lost. Suspect the network, or something that tore
+  the account down underneath it.
+- No `declining call N` line at all — the response was never generated. Suspect
+  the call binding: check for `[call] no SIP teardown for call N`.
+
+Run case 1 at least once with the host calling `logout()` immediately after
+`endCall(uuid:)`, which is what the documentation shows. `[call] waiting for N
+call(s) to finish tearing down` followed by `[call] call teardown finished` must
+appear between them. `[call] N call(s) still tearing down after 1000 ms` means
+the drain expired and the account went away regardless — record the log, this is
+the case that leaves a PBX ringing.
+
+**Case 2** is a regression test: it failed in 0.3.0 and earlier, where the
+decline was dropped because the SIP call did not exist yet, and the late INVITE
+then rang as a second call. Fixed in 0.3.1 — the marker that proves the fix ran
+is `[call] INVITE for call … arrived after the user rejected it; answered 603`.
+
+**Case 3** ends on the ring timeout rather than a decline, so the final response
+is `480`, not `603`: `[call] declining call N with 480: ring timeout`, then the
+same on-the-wire and ACK pair.
 
 ### 5. The intercom hangs up
 
