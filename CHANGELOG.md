@@ -27,6 +27,24 @@ bump may contain breaking changes, and each one is listed below.
   invisible and `pjsua_call_hangup` is documented not to deliver
   `on_call_tsx_state`, which made the rest of the exchange unobservable. The
   library-owned CallKit path already chose explicitly; host-owned mode did not.
+- Data races on the client's published properties. `currentCallUUID`,
+  `currentCaller`, `registrationError`, `configuration`, `provider`,
+  `defaultCallerName`, `pushPayloadParser` and the audio coordinator's
+  `currentAudioRoute` are object-typed and were written on one thread while
+  being read from another — from a PJSIP callback thread, from the SIP queue or
+  from whatever thread the host called a public method on. Unsynchronized, that
+  is an over-release and a crash, not merely a stale read; a regression test
+  that hammers both sides reproduces it in under a second. All published state
+  now goes through lock-protected accessors — on the client, on
+  `CallWaveAudioSessionCoordinator` and on `CallWaveCallStateMachine`, which
+  owns the call projection. That projection (`callState`, `currentCallUUID`,
+  `currentCaller`, `microphoneMuted`) is additionally written on the main queue
+  only; `-stop` and `-providerDidReset:` used to write it from the caller's
+  thread. No public API change; see the Threading section of
+  `CallWaveKit/README.md` for the contract this now actually keeps.
+- The network path monitor, its handle and the `hasObservedPath` bookkeeping are
+  created, cancelled and observed on the SIP queue, so `-stop` racing a path
+  update can no longer cancel a monitor another thread is mid-callback on.
 
 ### Added
 
@@ -39,26 +57,6 @@ bump may contain breaking changes, and each one is listed below.
   wire, each retransmission that means no ACK came back, the ACK itself, and an
   INVITE transaction that ended without one. `FIELD-TESTING.md` scenario 4 lists
   the sequence to expect.
-
-- Data races on the client's published properties. `currentCallUUID`,
-  `currentCaller`, `registrationError`, `configuration`, `provider`,
-  `defaultCallerName`, `pushPayloadParser` and the audio coordinator's
-  `currentAudioRoute` are object-typed and were written on one thread while
-  being read from another — from a PJSIP callback thread, from the SIP queue or
-  from whatever thread the host called a public method on. Unsynchronized, that
-  is an over-release and a crash, not merely a stale read; a regression test
-  that hammers both sides reproduces it in under a second. All published state
-  now goes through lock-protected accessors, and the call projection
-  (`callState`, `currentCallUUID`, `currentCaller`, `microphoneMuted`) is
-  written on the main queue only — `-stop` and `-providerDidReset:` used to
-  write it from the caller's thread. No public API change; see the Threading
-  section of `CallWaveKit/README.md` for the contract this now actually keeps.
-- The network path monitor, its handle and the `hasObservedPath` bookkeeping are
-  created, cancelled and observed on the SIP queue, so `-stop` racing a path
-  update can no longer cancel a monitor another thread is mid-callback on.
-
-### Added
-
 - Session timers (RFC 4028) via `CallWaveConfiguration`: `sessionTimersMode`
   (`.inactive`, `.optional`, `.always`, `.required`), `sessionTimerInterval`
   (default 1800 s) and `sessionTimerMinimum` (default 90 s, clamped to the RFC
@@ -77,6 +75,12 @@ bump may contain breaking changes, and each one is listed below.
   route changes, and the published audio route. PJSIP no longer appears in the
   audio-session code path — the coordinator asks its delegate (the client) to
   open or drop the sound device on the SIP queue. No public API changes.
+- Per-call state transitions and the current-call projection (aggregate state,
+  current call UUID, caller identity, microphone mute) moved out of
+  `CallWaveClient` into a new internal `CallWaveCallStateMachine`, with the
+  client as its delegate for state-change callbacks and events. This makes
+  call-state races (push/INVITE/cancel, concurrent reporting) testable in
+  isolation. No public API changes.
 
 ## [0.5.0] - 2026-08-15
 

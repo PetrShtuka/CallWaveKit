@@ -5,6 +5,8 @@
 #import "CallWaveClient.h"
 #import "CallWaveIncomingCallDescriptor.h"
 #import "CallWaveAudioSessionCoordinator.h"
+#import "CallWaveCallStateMachine.h"
+#import "CallWaveCallRegistry.h"
 
 // The published properties are written on the main queue and read from the SIP
 // queue, from PJSIP's callback threads and from the host's own threads. These
@@ -117,6 +119,41 @@ static const NSUInteger CallWaveConcurrencyIterations = 50000;
         (void)client.isRunning;
         (void)client.registrationState;
         (void)client.registrationError;
+    }];
+}
+
+/// The call projection lives in CallWaveCallStateMachine, but it is read
+/// through the client's pass-throughs from whatever thread the host calls a
+/// public method on — -resolveCallForUUID: backs every argument-less call
+/// action. This drives the machine's writers directly against those reads.
+- (void)testCallStateMachineProjectionSurvivesConcurrentReadsAndWrites {
+    CallWaveCallRegistry *registry = [[CallWaveCallRegistry alloc] init];
+    CallWaveCallStateMachine *machine =
+        [[CallWaveCallStateMachine alloc] initWithRegistry:registry];
+
+    NSMutableArray<NSUUID *> *uuids = [NSMutableArray array];
+    for (NSUInteger i = 0; i < 8; i++) {
+        NSUUID *uuid = [NSUUID UUID];
+        CallWaveCall *call = [registry registerCallWithUUID:uuid];
+        call.displayName = [NSString stringWithFormat:@"Door %lu", (unsigned long)i];
+        [uuids addObject:uuid];
+    }
+
+    [self hammerWithWriter:^(NSUInteger i) {
+        NSUUID *uuid = uuids[i % uuids.count];
+        if (i % 3 == 0) {
+            [machine publishState:CallWaveCallStateActive forUUID:uuid];
+        } else if (i % 3 == 1) {
+            [machine adoptCurrentCall:[registry callForUUID:uuid]];
+        } else {
+            [machine detachIfCurrentUUID:uuid];
+        }
+    } reader:^(NSUInteger i) {
+        (void)machine.currentCallUUID;
+        (void)machine.currentCaller;
+        (void)machine.state;
+        (void)machine.microphoneMuted;
+        (void)[machine resolveCallForUUID:nil];
     }];
 }
 

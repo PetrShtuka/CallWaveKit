@@ -449,9 +449,12 @@ queue hop arrives too late — and reach CallWaveKit state only through the
 lock-protected call registry.
 
 **The call projection changes on the main queue.** `callState`,
-`currentCallUUID`, `currentCaller` and `microphoneMuted` are written there and
-nowhere else, which is also where the delegate, the event observers and CallKit
-are driven, so an observer never sees half of a transition.
+`currentCallUUID`, `currentCaller` and `microphoneMuted` belong to
+`CallWaveCallStateMachine`, which is written from the main queue and nowhere
+else — the same queue the delegate, the event observers and CallKit are driven
+on, so an observer never sees half of a transition. The machine's own accessors
+still take a lock, because the client's pass-throughs to them are read from any
+thread: `resolveCallForUUID:` backs every argument-less call action.
 
 **The rest of the published state is lock-protected rather than main-queue
 bound.** `isRunning`, `registrationState`, `registrationError` and
@@ -463,6 +466,11 @@ thread, so reading them from a PJSIP callback thread — or writing
 rather than a torn read or an over-release. The same applies to the audio
 coordinator's `currentAudioRoute`, which AVAudioSession republishes from its own
 notification thread.
+
+A property declared with a custom getter (`getter=isMicrophoneMuted`) has to
+have *that* name implemented; writing `-microphoneMuted` instead leaves the real
+getter auto-synthesized and unlocked. `CallWavePublishedStateConcurrencyTests`
+under `-enableThreadSanitizer YES` catches it.
 
 The properties that are read but never written after setup — `answerTimeout`,
 `acceptDelay`, `incomingCallTimeout`, `pushCompletionTimeout`, `dtmfMethod` —
