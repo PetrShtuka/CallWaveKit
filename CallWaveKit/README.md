@@ -106,29 +106,36 @@ completion handler runs — see
 [Releasing the account while a call is still ending](#releasing-the-account-while-a-call-is-still-ending)
 before calling `logout()` or `stop()` next to it.
 
-Both paths are logged, in the `call` category:
+Both paths are logged, in the `call` category. A decline that worked:
 
 ```
 [call] declining call 3 with 603: ended by the host (never answered, INVITE state EARLY)
 [call] 603 handed to the transport for call 3
-[call] call 3: 603 is on the wire, waiting for the ACK
-[call] call 3: the peer ACKed 603, the teardown reached it
+[call] 603 sent to 10.0.0.9:5060 for Call-ID 4f2c…, waiting for the ACK
+[call] the peer ACKed 603, the teardown reached it
 ```
 
-A `603` that never reaches the PBX looks like this instead — the phone shows the
-same clean decline either way, so this is the only place the difference shows:
+The third line is worth more than it looks: it is emitted from the transport
+hand-off itself and carries the destination, so it separates "the response left
+the device, addressed there" from "PJSUA accepted our call and nothing went out".
+The fourth is the one that proves the PBX has it.
+
+A `603` that reaches the wire but never gets acknowledged shows the first three
+and then, once the transaction has given up:
 
 ```
-[call] call 3: retransmitting 603, the peer has not ACKed it
-[call] call 3: the INVITE transaction ended on 603 without an ACK. The peer
-       never confirmed the teardown and may still have the call up.
+[call] 603 for Call-ID 4f2c… was never ACKed within 32s. The peer never
+       confirmed the teardown and may still have the call up.
 ```
 
-And a teardown that was never generated at all has neither, only:
+And a teardown that was never generated at all has none of them, only:
 
 ```
 [call] no SIP teardown for call 3 (ended by the host): PJSUA no longer knows this call
 ```
+
+The phone shows the same clean decline in all three cases, so the log is the
+only place they differ.
 
 ## Engine settings
 
@@ -213,11 +220,24 @@ retransmissions and the peer's acknowledgement happen afterwards, and PJSUA's
 own header says the hangup "will continue in the background". `pjsua_acc_del`,
 meanwhile, "always deletes the account regardless of active calls".
 
-So `logout()` and `stop()` wait for it. Both drain PJSUA's call teardown before
-deleting the account or destroying the runtime — up to one second, which covers
-a final response whose first packet was lost and had to be retransmitted — and
-log `call teardown finished`, or a warning naming how many calls were still
-going, if the wait expires. `login(configuration:)` drains the same way when
+So `logout()` and `stop()` wait for it, and the wait covers **both** kinds of
+teardown, which need tracking separately:
+
+- **An established call ended with BYE** is tracked by PJSUA itself.
+  `pjsua_call_get_count()` is documented to include "calls that are no longer
+  active but still in the process of hanging up", and the call slot survives
+  until the BYE transaction finishes.
+- **A call declined with a final response** is not. PJSUA disconnects the invite
+  session the moment a `603` is sent and releases the call slot, so its count is
+  already back to zero while the response has not been acknowledged. CallWaveKit
+  tracks these itself, by Call-ID and CSeq, from the transport hand-off until the
+  ACK arrives.
+
+Both are drained for up to one second — enough for a response whose first packet
+was lost and had to be retransmitted — and the wait logs
+`waiting for teardown: N call(s) hanging up, M final response(s) awaiting an ACK`
+followed by `call teardown finished`, or a warning naming what was still
+outstanding if it expires. `login(configuration:)` drains the same way when
 replacing an account, because per-push credentials mean a new push can arrive
 while the previous call is still ending.
 

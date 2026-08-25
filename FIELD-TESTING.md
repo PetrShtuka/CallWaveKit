@@ -180,17 +180,25 @@ and confirm it against the log.
 ```
 [call] declining call N with 603: … (never answered, INVITE state EARLY)
 [call] 603 handed to the transport for call N
-[call] call N: 603 is on the wire, waiting for the ACK
-[call] call N: the peer ACKed 603, the teardown reached it
+[call] 603 sent to <pbx>:<port> for Call-ID …, waiting for the ACK
+[call] the peer ACKed 603, the teardown reached it
 ```
 
-The last line is the one that proves it. Its absence is the failure, and there
-are two shapes of it:
+The last line is the one that proves it. The third narrows down the failure when
+it is missing, because it comes from the transport hand-off and names where the
+response went. Three shapes of failure:
 
-- `[call] call N: retransmitting 603, the peer has not ACKed it`, then
-  `[call] call N: the INVITE transaction ended on 603 without an ACK` — the
-  response was generated and lost. Suspect the network, or something that tore
-  the account down underneath it.
+- All four lines but the PBX still rings — the response arrived and was
+  acknowledged, and the PBX is ignoring `603`. Try scenario 3, which ends on
+  `480` instead: if that one stops the intercom, the PBX wants a different code
+  and this is a compatibility finding, not a bug.
+- First three lines, then
+  `[call] 603 for Call-ID … was never ACKed within 32s` — the response left the
+  device and the PBX never confirmed it. Suspect the network path, and capture
+  it: `rvictl -s <device-udid>` on a tethered Mac gives a real interface to run
+  `tcpdump` against, with no build change.
+- Two lines and no third — PJSUA accepted the decline but nothing reached the
+  transport. That is a library bug; attach the log.
 - No `declining call N` line at all — the response was never generated. Suspect
   the call binding: check for `[call] no SIP teardown for call N`.
 

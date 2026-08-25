@@ -12,6 +12,7 @@
 #import "CallWaveDiagnosticsSnapshotInternal.h"
 #import "CallWaveTURNConfiguration.h"
 #import "CallWavePushCompletionGate.h"
+#import "CallWaveTeardownObserverInternal.h"
 
 #import <AudioToolbox/AudioToolbox.h>
 #import <CallKit/CallKit.h>
@@ -57,17 +58,36 @@ static pj_pool_t *gAccountHeaderPool = NULL;
 static NSUInteger gCreatedTransports = 0;
 static __weak CallWaveClient *gActiveClient = nil;
 
-/// Whether the peer has ACKed the non-2xx final response of the call in that
-/// slot. Written from PJSIP's worker thread and from `sipQueue`, which is why
-/// it is atomic; read only to tell "the peer confirmed the teardown" apart from
-/// "the transaction gave up without ever hearing back".
-static _Atomic(bool) gFinalResponseAcked[PJSUA_MAX_CALLS];
+/// One outgoing non-2xx final response to an INVITE, from the moment it is
+/// handed to the transport until the peer ACKs it. Keyed by Call-ID and CSeq
+/// because by then the pjsua call is already gone: PJSUA disconnects the invite
+/// session as soon as a final response is sent, drops the call slot, and stops
+/// reporting anything for it — which is why `pjsua_call_get_count()` cannot see
+/// a declined call waiting for its ACK, and why the per-call
+/// `on_call_tsx_state` never fires for one either.
+typedef struct {
+    pj_bool_t       inUse;
+    char            callId[PJSIP_MAX_URL_SIZE];
+    int             cseq;
+    int             statusCode;
+    NSTimeInterval  sentAt;
+} CallWaveFinalResponse;
+
+/// Small and fixed: an intercom client is configured for one call, a handful at
+/// the very most, and an entry lives for at most one transaction.
+#define CallWaveMaxTrackedFinalResponses 8
+
+/// SIP timer H — how long a UAS INVITE transaction retransmits a final response
+/// before giving up. An entry older than this is dead weight and is reclaimed,
+/// so one PBX that never ACKs cannot make every later teardown wait.
+static const NSTimeInterval CallWaveFinalResponseLifetime = 32.0;
+
+static CallWaveFinalResponse gFinalResponses[CallWaveMaxTrackedFinalResponses];
+static os_unfair_lock gFinalResponseLock = OS_UNFAIR_LOCK_INIT;
 
 static void onIncomingCall(pjsua_acc_id accId, pjsua_call_id callId, pjsip_rx_data *rdata);
 static void onCallState(pjsua_call_id callId, pjsip_event *event);
 static void onCallMediaState(pjsua_call_id callId);
-static void onCallTsxState(pjsua_call_id callId, pjsip_transaction *tsx,
-                           pjsip_event *event);
 static void onRegistrationState(pjsua_acc_id accId);
 static void onPJLog(int level, const char *data, int length);
 
@@ -109,20 +129,213 @@ static BOOL ensurePJThreadRegistered(const char *name) {
     return YES;
 }
 
-/// Waits for PJSUA to finish tearing down every call it still holds.
+/// Tracks outgoing non-2xx final responses to an INVITE until the peer ACKs
+/// them, and logs both ends of that exchange.
 ///
-/// `pjsua_call_hangup` and `pjsua_call_answer` return as soon as the message is
-/// with the transaction layer: PJSUA's own header says the hangup process
-/// "will continue in the background", and `pjsua_call_get_count()` is
-/// documented to include "calls that are no longer active but still in the
-/// process of hanging up". A declined call sits in exactly that state while its
-/// `603` waits for an ACK.
+/// This is a `pjsip_module` rather than PJSUA's `on_call_tsx_state` because the
+/// per-call callback is useless here twice over: `pjsua_call_hangup` is
+/// documented not to deliver it at all, and for a declined call PJSUA has
+/// already disconnected the invite session and released the call slot by the
+/// time the response is on the wire, so there is no call left to report against.
+///
+/// It is not `on_tsx_state` either — that one only reaches the module acting as
+/// the transaction's *user*, which for an INVITE is the invite session, never an
+/// application module. What does reach every registered module is the response
+/// going out and the request coming in, so those are what this watches: the
+/// final response leaving, and the ACK arriving.
+///
+/// The priority puts it ahead of the transaction layer, because the ACK to a
+/// non-2xx final response is absorbed there and never reaches a module behind
+/// it.
+
+static void forgetFinalResponseLocked(CallWaveFinalResponse *entry) {
+    entry->inUse = PJ_FALSE;
+    entry->callId[0] = '\0';
+}
+
+/// Number of final responses still waiting for an ACK, reclaiming any that have
+/// outlived the transaction that would have retransmitted them.
+static unsigned pendingFinalResponseCount(void) {
+    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    unsigned pending = 0;
+    os_unfair_lock_lock(&gFinalResponseLock);
+    for (int i = 0; i < CallWaveMaxTrackedFinalResponses; i++) {
+        CallWaveFinalResponse *entry = &gFinalResponses[i];
+        if (!entry->inUse) {
+            continue;
+        }
+        if (now - entry->sentAt > CallWaveFinalResponseLifetime) {
+            CWLogError(CallWaveLogCategoryCall,
+                       @"%d for Call-ID %s was never ACKed within %.0fs. The peer never "
+                       @"confirmed the teardown and may still have the call up.",
+                       entry->statusCode, entry->callId, CallWaveFinalResponseLifetime);
+            forgetFinalResponseLocked(entry);
+            continue;
+        }
+        pending++;
+    }
+    os_unfair_lock_unlock(&gFinalResponseLock);
+    return pending;
+}
+
+static void forgetAllFinalResponses(void) {
+    os_unfair_lock_lock(&gFinalResponseLock);
+    for (int i = 0; i < CallWaveMaxTrackedFinalResponses; i++) {
+        forgetFinalResponseLocked(&gFinalResponses[i]);
+    }
+    os_unfair_lock_unlock(&gFinalResponseLock);
+}
+
+/// Every response CallWaveKit sends passes through here on its way out.
+static pj_status_t onFinalResponseSent(pjsip_tx_data *tdata) {
+    pjsip_msg *msg = tdata != NULL ? tdata->msg : NULL;
+    if (msg == NULL || msg->type != PJSIP_RESPONSE_MSG) {
+        return PJ_SUCCESS;
+    }
+    int code = msg->line.status.code;
+    pjsip_cseq_hdr *cseq = PJSIP_MSG_CSEQ_HDR(msg);
+    pjsip_cid_hdr *cid = PJSIP_MSG_CID_HDR(msg);
+    if (code < 300 || cseq == NULL || cid == NULL ||
+        pjsip_method_cmp(&cseq->method, pjsip_get_invite_method()) != 0) {
+        return PJ_SUCCESS;
+    }
+
+    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    os_unfair_lock_lock(&gFinalResponseLock);
+    CallWaveFinalResponse *slot = NULL;
+    for (int i = 0; i < CallWaveMaxTrackedFinalResponses; i++) {
+        if (!gFinalResponses[i].inUse) {
+            slot = &gFinalResponses[i];
+            break;
+        }
+    }
+    if (slot != NULL) {
+        slot->inUse = PJ_TRUE;
+        slot->cseq = cseq->cseq;
+        slot->statusCode = code;
+        slot->sentAt = now;
+        pj_ansi_snprintf(slot->callId, sizeof(slot->callId), "%.*s",
+                         (int)cid->id.slen, cid->id.ptr);
+    }
+    os_unfair_lock_unlock(&gFinalResponseLock);
+
+    // The destination is the part a host cannot get anywhere else without a
+    // packet capture: it says the response reached the transport and where it
+    // was addressed.
+    CWLogInfo(CallWaveLogCategoryCall,
+              @"%d sent to %s:%d for Call-ID %.*s, waiting for the ACK",
+              code, tdata->tp_info.dst_name, tdata->tp_info.dst_port,
+              (int)cid->id.slen, cid->id.ptr);
+    if (slot == NULL) {
+        CWLogWarning(CallWaveLogCategoryCall,
+                     @"no free slot to track %d; its ACK will not be reported", code);
+    }
+    return PJ_SUCCESS;
+}
+
+/// The ACK to a non-2xx final response is absorbed by the transaction layer, so
+/// this has to run before it. Returns PJ_FALSE so it still gets there.
+static pj_bool_t onRequestReceived(pjsip_rx_data *rdata) {
+    pjsip_msg *msg = rdata != NULL ? rdata->msg_info.msg : NULL;
+    if (msg == NULL || msg->type != PJSIP_REQUEST_MSG ||
+        pjsip_method_cmp(&msg->line.req.method, pjsip_get_ack_method()) != 0) {
+        return PJ_FALSE;
+    }
+    pjsip_cid_hdr *cid = rdata->msg_info.cid;
+    pjsip_cseq_hdr *cseq = rdata->msg_info.cseq;
+    if (cid == NULL || cseq == NULL) {
+        return PJ_FALSE;
+    }
+
+    int acked = 0;
+    os_unfair_lock_lock(&gFinalResponseLock);
+    for (int i = 0; i < CallWaveMaxTrackedFinalResponses; i++) {
+        CallWaveFinalResponse *entry = &gFinalResponses[i];
+        if (!entry->inUse || entry->cseq != cseq->cseq) {
+            continue;
+        }
+        if (pj_strcmp2(&cid->id, entry->callId) != 0) {
+            continue;
+        }
+        acked = entry->statusCode;
+        forgetFinalResponseLocked(entry);
+        break;
+    }
+    os_unfair_lock_unlock(&gFinalResponseLock);
+
+    if (acked != 0) {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"the peer ACKed %d, the teardown reached it", acked);
+    }
+    return PJ_FALSE;
+}
+
+static pjsip_module gTeardownObserver = {
+    NULL, NULL,
+    { "callwave-teardown", 17 },
+    -1,
+    PJSIP_MOD_PRIORITY_TSX_LAYER - 1,
+    NULL,                    /* load          */
+    NULL,                    /* start         */
+    NULL,                    /* stop          */
+    NULL,                    /* unload        */
+    &onRequestReceived,      /* on_rx_request */
+    NULL,                    /* on_rx_response*/
+    NULL,                    /* on_tx_request */
+    &onFinalResponseSent,    /* on_tx_response*/
+    NULL                     /* on_tsx_state  */
+};
+
+BOOL CallWaveTeardownObserverIsRegistered(void) {
+    return gTeardownObserver.id != -1;
+}
+
+unsigned CallWaveTeardownPendingFinalResponses(void) {
+    return pendingFinalResponseCount();
+}
+
+/// Must run on `sipQueue`, after `pjsua_init`.
+static void registerTeardownObserver(void) {
+    if (gTeardownObserver.id != -1) {
+        return;
+    }
+    forgetAllFinalResponses();
+    pj_status_t status =
+        pjsip_endpt_register_module(pjsua_get_pjsip_endpt(), &gTeardownObserver);
+    if (status != PJ_SUCCESS) {
+        CWLogError(CallWaveLogCategoryCall,
+                   @"teardown observer not registered (%d); a declined call's ACK "
+                   @"will not be reported and cannot be waited for", status);
+    }
+}
+
+/// Must run on `sipQueue`, before `pjsua_destroy`.
+static void unregisterTeardownObserver(void) {
+    if (gTeardownObserver.id == -1) {
+        return;
+    }
+    pjsip_endpt_unregister_module(pjsua_get_pjsip_endpt(), &gTeardownObserver);
+    gTeardownObserver.id = -1;
+    forgetAllFinalResponses();
+}
+
+/// Waits for both halves of a teardown to finish: PJSUA's own hangup process,
+/// and any final response of ours still waiting for its ACK.
+///
+/// The two need separate tracking because PJSUA only covers one of them.
+/// `pjsua_call_get_count()` is documented to include "calls that are no longer
+/// active but still in the process of hanging up", and for a BYE that is true —
+/// the slot stays until the transaction completes. For a call declined with a
+/// final response it is not: PJSUA disconnects the invite session the moment
+/// the response is sent and releases the slot, so the count is back to zero
+/// while the `603` has not even been ACKed yet. Draining on the count alone
+/// therefore protected the BYE path and left the decline path exactly as
+/// unprotected as it was before — which is what `gFinalResponses` and the
+/// teardown observer above exist to fix.
 ///
 /// This matters because `pjsua_acc_del` "always deletes the account regardless
 /// of active calls" — PJSUA's wording — and its own documentation says to hang
-/// up first and wait "until the calls are fully disconnected". Deleting the
-/// account inside that window is how a decline the phone showed as clean leaves
-/// the PBX still ringing.
+/// up first and wait "until the calls are fully disconnected".
 ///
 /// Must run on `sipQueue`. PJSIP polls its ioqueue on its own worker thread, so
 /// parking this one does not stall the ACK being waited for.
@@ -130,21 +343,24 @@ static BOOL drainCallTeardown(NSTimeInterval timeout) {
     if (!gPJSUAStarted) {
         return YES;
     }
-    unsigned remaining = pjsua_call_get_count();
-    if (remaining == 0) {
+    unsigned calls = pjsua_call_get_count();
+    unsigned responses = pendingFinalResponseCount();
+    if (calls == 0 && responses == 0) {
         return YES;
     }
 
     CWLogInfo(CallWaveLogCategoryCall,
-              @"waiting for %u call(s) to finish tearing down", remaining);
+              @"waiting for teardown: %u call(s) hanging up, %u final response(s) "
+              @"awaiting an ACK", calls, responses);
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX(timeout, 0)];
-    while ((remaining = pjsua_call_get_count()) > 0) {
+    while ((calls = pjsua_call_get_count()) > 0 ||
+           (responses = pendingFinalResponseCount()) > 0) {
         if (deadline.timeIntervalSinceNow <= 0) {
             CWLogWarning(CallWaveLogCategoryCall,
-                         @"%u call(s) still tearing down after %.0f ms; going ahead anyway. "
-                         @"The peer may never receive the final response, and a PBX that "
-                         @"missed it keeps the call up.",
-                         remaining, timeout * 1000.0);
+                         @"still tearing down after %.0f ms (%u call(s), %u response(s) "
+                         @"unACKed); going ahead anyway. A peer that missed the final "
+                         @"response keeps the call up.",
+                         timeout * 1000.0, calls, responses);
             return NO;
         }
         usleep((useconds_t)(CallWaveTeardownPollInterval * USEC_PER_SEC));
@@ -750,7 +966,6 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     config.cb.on_incoming_call = &onIncomingCall;
     config.cb.on_call_state = &onCallState;
     config.cb.on_call_media_state = &onCallMediaState;
-    config.cb.on_call_tsx_state = &onCallTsxState;
     config.cb.on_reg_state = &onRegistrationState;
 
     NSString *userAgent = engine.userAgent;
@@ -799,6 +1014,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     if (status != PJ_SUCCESS) {
         return status;
     }
+
+    // The endpoint exists from here on, which is what the observer attaches to.
+    registerTeardownObserver();
 
     // UDP is created eagerly because it is the default for intercoms; TCP is
     // best effort. Anything else is created on demand by the account.
@@ -1159,6 +1377,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
             pj_pool_release(gAccountHeaderPool);
             gAccountHeaderPool = NULL;
         }
+        unregisterTeardownObserver();
         if (gPJSUACreated) {
             pjsua_destroy();
         }
@@ -1602,8 +1821,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 /// not to deliver `on_call_tsx_state`, so the peer's ACK is unobservable and a
 /// final response that was lost looks exactly like one that was never
 /// generated. Choosing here, and answering through `pjsua_call_answer` when the
-/// call is still ringing, is what makes `onCallTsxState` below able to report
-/// the rest of the exchange.
+/// call is still ringing, is what keeps the exchange on a path the teardown
+/// observer can report — PJSUA stops speaking about the call entirely once its
+/// invite session is gone, which for a final response is immediately.
 ///
 /// Must run on `sipQueue`.
 - (BOOL)endSIPCall:(pjsua_call_id)callId
@@ -1627,9 +1847,6 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 
     BOOL neverAnswered = info.state == PJSIP_INV_STATE_INCOMING ||
                          info.state == PJSIP_INV_STATE_EARLY;
-    if (callId >= 0 && callId < (pjsua_call_id)PJSUA_MAX_CALLS) {
-        atomic_store(&gFinalResponseAcked[callId], false);
-    }
 
     pj_status_t status;
     if (neverAnswered) {
@@ -3180,60 +3397,6 @@ static void onCallState(pjsua_call_id callId, pjsip_event *event) {
 
 static void onCallMediaState(pjsua_call_id callId) {
     [gActiveClient handleMediaStateForCall:callId];
-}
-
-/// Reports what happened to a teardown after CallWaveKit handed it over.
-///
-/// The INVITE server transaction is the only one that says anything useful
-/// here: after a non-2xx final response it sits in COMPLETED, retransmitting on
-/// a timer until the peer ACKs, and only then moves to CONFIRMED. Without these
-/// lines a host cannot tell a `603` that was lost on the way to the PBX from a
-/// `603` that was never generated — and on UDP, with the PBX still ringing and
-/// the phone showing a clean decline, that is the whole question.
-static void onCallTsxState(pjsua_call_id callId, pjsip_transaction *tsx,
-                           pjsip_event *event) {
-    if (tsx == NULL || tsx->role != PJSIP_ROLE_UAS ||
-        tsx->method.id != PJSIP_INVITE_METHOD) {
-        return;
-    }
-    // 1xx belongs to the ringing path and 2xx to the answer path; both are
-    // logged where they are sent.
-    int code = tsx->status_code;
-    if (code < 300) {
-        return;
-    }
-    BOOL tracked = callId >= 0 && callId < (pjsua_call_id)PJSUA_MAX_CALLS;
-
-    switch (tsx->state) {
-        case PJSIP_TSX_STATE_COMPLETED:
-            if (event != NULL && event->type == PJSIP_EVENT_TIMER) {
-                CWLogWarning(CallWaveLogCategoryCall,
-                             @"call %d: retransmitting %d, the peer has not ACKed it",
-                             callId, code);
-            } else {
-                CWLogInfo(CallWaveLogCategoryCall,
-                          @"call %d: %d is on the wire, waiting for the ACK", callId, code);
-            }
-            break;
-        case PJSIP_TSX_STATE_CONFIRMED:
-            if (tracked) {
-                atomic_store(&gFinalResponseAcked[callId], true);
-            }
-            CWLogInfo(CallWaveLogCategoryCall,
-                      @"call %d: the peer ACKed %d, the teardown reached it", callId, code);
-            break;
-        case PJSIP_TSX_STATE_TERMINATED:
-            if (tracked && atomic_load(&gFinalResponseAcked[callId])) {
-                break;
-            }
-            CWLogError(CallWaveLogCategoryCall,
-                       @"call %d: the INVITE transaction ended on %d without an ACK. "
-                       @"The peer never confirmed the teardown and may still have the "
-                       @"call up.", callId, code);
-            break;
-        default:
-            break;
-    }
 }
 
 static void onRegistrationState(pjsua_acc_id accId) {
