@@ -68,7 +68,7 @@ CocoaPods fail with a version mismatch, because `spec.source` resolves
 ### 3. Tag
 
 ```sh
-RELEASE_VERSION=0.5.0
+RELEASE_VERSION=0.6.0
 git checkout main
 git pull
 git tag -a "$RELEASE_VERSION" -m "CallWaveKit $RELEASE_VERSION"

@@ -4,7 +4,7 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
-## [Unreleased]
+## [0.6.0] - 2026-08-24
 
 ### Fixed
 
@@ -45,6 +45,20 @@ bump may contain breaking changes, and each one is listed below.
 - The network path monitor, its handle and the `hasObservedPath` bookkeeping are
   created, cancelled and observed on the SIP queue, so `-stop` racing a path
   update can no longer cancel a monitor another thread is mid-callback on.
+
+### Changed
+
+- **`logout()` and `stop()` can now block their caller for up to a second** when
+  a call is still tearing down, because that is the wait that keeps a declined
+  call from leaving the PBX ringing. They return immediately when nothing is in
+  flight, which is the usual case. Hosts that call either from the main queue —
+  a `CXEndCallAction` handler, typically — should move them off it.
+  `unregister()` is not affected.
+- The threading contract in `CallWaveKit/README.md` now describes what the code
+  keeps rather than what it aimed at: the call projection is main-queue only,
+  and the rest of the published state is lock-protected and readable from any
+  thread. No API changed; a host that already treated the client as thread-safe
+  was relying on something that was not true before this release.
 
 ### Added
 
