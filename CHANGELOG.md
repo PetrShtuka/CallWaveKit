@@ -4,6 +4,39 @@ All notable changes to CallWaveKit are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html); until 1.0 a minor
 bump may contain breaking changes, and each one is listed below.
 
+## [Unreleased]
+
+### Fixed
+
+- The 0.6.0 teardown drain did not cover a declined call — the case it was
+  written for. It waited on `pjsua_call_get_count()`, whose documentation says
+  it includes "calls that are no longer active but still in the process of
+  hanging up". That holds for a call ended with BYE, where the slot survives
+  until the transaction finishes, and not for one declined with a final
+  response: PJSUA disconnects the invite session as soon as the `603` is sent
+  and releases the slot, so the count is already zero while the response is
+  unacknowledged. `logout()` therefore drained nothing and deleted the account
+  immediately, exactly as before 0.6.0. A regression test now declines a real
+  INVITE over loopback UDP and asserts both that the `603` reaches the wire and
+  that `pjsua_call_get_count()` is zero while it is outstanding.
+- Final responses are now tracked by Call-ID and CSeq, from the transport
+  hand-off until the peer's ACK, and the drain waits on that as well as on
+  PJSUA's own count. An entry is reclaimed after 32 seconds — SIP timer H — so a
+  PBX that never acknowledges cannot make every later teardown wait.
+
+### Changed
+
+- The decline path is observed by a `pjsip_module` registered on the endpoint
+  ahead of the transaction layer, rather than by PJSUA's per-call
+  `on_call_tsx_state`. That callback never fired for a declined call: PJSUA
+  stops reporting a call once its invite session is gone, and
+  `pjsua_call_hangup` is documented not to deliver it at all. `on_tsx_state`
+  could not replace it either — the header is explicit that it reaches only the
+  module "acting as transaction user", which for an INVITE is the invite
+  session. Watching the outgoing response and the incoming ACK does work, and
+  the new `603 sent to <host>:<port> for Call-ID …` line carries the destination,
+  which is what separates "nothing was sent" from "it was sent and lost".
+
 ## [0.6.0] - 2026-08-24
 
 > **Not field-tested.** This release ships on its automated suite alone —
