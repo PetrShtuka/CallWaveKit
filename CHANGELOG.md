@@ -6,6 +6,13 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [0.6.0] - 2026-08-24
 
+> **Not field-tested.** This release ships on its automated suite alone —
+> 131 tests, thread sanitizer, device and strict-concurrency builds, podspec
+> lint. The on-device pass in `FIELD-TESTING.md` was not run, so the answer
+> path, the push path, the audio session, the call teardown and the
+> registration lifecycle are unverified against a real PBX. See the 0.6.0 run
+> record in that file.
+
 ### Fixed
 
 - A call declined while it was still ringing could leave the PBX with the call

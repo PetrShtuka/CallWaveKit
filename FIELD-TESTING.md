@@ -19,12 +19,24 @@ as the regression matrix for Majordom deployments and future releases.
 
 ## 0.6.0 run record
 
-**Status: not run. 0.6.0 must not be tagged until this table is filled in.**
-Nothing below may be ticked off from the Simulator, from a code reading or from
-a green CI run — none of those exercise PushKit, the lock screen or a real audio
-route, which is the entire reason this file exists. Fill the table in on the
-device and commit it before the tag. An empty record is the honest state of the
-release; an invented one is worse than no record at all.
+**Status: not run. 0.6.0 was tagged without it**, on the maintainer's decision
+of 2026-08-25. This is a deliberate exception to step 0 of `RELEASING.md`, not
+an oversight, and it is written down here rather than left as an empty table
+somebody later reads as a pass.
+
+What that means concretely: 0.6.0 ships with its automated suite green — 131
+tests, thread sanitizer clean, device and strict-concurrency builds, podspec
+lint — and with **no on-device verification of the answer path, the push path,
+the audio session, the call teardown or the registration lifecycle.** The unit
+suite reaches none of them. The largest behavioural change in the release, the
+decline-path fix, was made from a field report and has never been confirmed in
+the field.
+
+The table below stays open. Fill it in whenever the pass happens, on 0.6.0 or
+on whatever ships next, and move this note to match. Nothing below may be
+ticked off from the Simulator, from a code reading or from a green CI run —
+none of those exercise PushKit, the lock screen or a real audio route, which is
+the entire reason this file exists.
 
 Since the last recorded pass (0.4.0, 2026-08-04) the answer path, the audio
 session, the call teardown and the account configuration have all moved, so this
