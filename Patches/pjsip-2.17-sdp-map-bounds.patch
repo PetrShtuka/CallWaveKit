@@ -1,0 +1,31 @@
+diff --git a/pjmedia/src/pjmedia/sdp_neg.c b/pjmedia/src/pjmedia/sdp_neg.c
+index f03c7d1..62560d0 100644
+--- a/pjmedia/src/pjmedia/sdp_neg.c
++++ b/pjmedia/src/pjmedia/sdp_neg.c
+@@ -42,3 +42,10 @@ typedef pj_int8_t codec_to_pt_map[PJMEDIA_CODEC_MGR_MAX_CODECS];
+ typedef pj_int8_t codec_to_pt_map[PJMEDIA_CODEC_MGR_MAX_CODECS];
+-
++
++/* Remote SDP payload types must fit the fixed-size dynamic PT maps before
++ * they are used as indices. */
++PJ_INLINE(pj_bool_t) is_dynamic_pt(unsigned pt)
++{
++    return pt >= START_DYNAMIC_PT && pt < START_DYNAMIC_PT + DYNAMIC_PT_SIZE;
++}
++
+ /**
+@@ -1920,3 +1927,3 @@ static pj_status_t assign_pt_and_update_map(pj_pool_t *pool,
+             pt = pj_strtoul(&rtpmap.pt);
+-            if (pt < START_DYNAMIC_PT)
++            if (!is_dynamic_pt(pt))
+                 continue;
+@@ -2041,3 +2048,3 @@ static pj_status_t assign_pt_and_update_map(pj_pool_t *pool,
+             pt = pj_strtoul(&fmtp.fmt);
+-            if (pt < START_DYNAMIC_PT)
++            if (!is_dynamic_pt(pt))
+                 continue;
+@@ -2058,3 +2065,3 @@ static pj_status_t assign_pt_and_update_map(pj_pool_t *pool,
+             pt = pj_strtoul(&sdp_m->desc.fmt[j]);
+-            if (pt < START_DYNAMIC_PT)
++            if (!is_dynamic_pt(pt))
+                  continue;

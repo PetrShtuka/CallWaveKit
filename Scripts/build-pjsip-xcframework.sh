@@ -7,6 +7,19 @@ OPUS_VERSION="${OPUS_VERSION:-1.5.2}"
 MIN_IOS_VERSION="${MIN_IOS_VERSION:-15.0}"
 BUILD_JOBS="${BUILD_JOBS:-8}"
 
+# PJSIP 2.17 predates the upstream fixes below and no patched stable release
+# exists yet. Keep the released base for compatibility, then apply the exact
+# maintainer commits instead of building a moving master branch.
+PJSIP_SECURITY_COMMITS=(
+  acc03b57cef7a7d31b8e1f5b9117437d7e87c591 # Service-Route stack overflow
+  a1b707c0c9b0506faf2a8a438b60f11ffd6a6fd9 # SDP a=crypto stack overflow
+  d6a0e7f76611c3a6f530ee051e3e7a622bb1748c # SIP header off-by-one
+  8d5956afab2ede95ddb199078dc19a8ac0114f3d # HTTP response heap overflow
+  628b71638465bacf66e767959e6acbab822eccd6 # telnet CLI history overflow
+  082948b0a2ed658229fc6a50e475b411c69b0d2a # forged simple-STUN response
+  fd9074547f4740de86548076c36d8d25be51fab3 # malformed RED SDP crash
+)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUTPUT_PATH="$PROJECT_ROOT/Vendor/PJSIP.xcframework"
@@ -52,6 +65,37 @@ if [[ ! -f "$SOURCE_ROOT/.callwave-patched" ]]; then
   git -C "$SOURCE_ROOT" apply \
     "$PROJECT_ROOT/Patches/sip-auth-client-sha256.patch"
   touch "$SOURCE_ROOT/.callwave-patched"
+fi
+
+# Each upstream security fix is a merge commit. Fetch its two parents and
+# apply only the first-parent diff, without creating local commits or requiring
+# git user identity. Per-fix stamps make a pinned work directory resumable.
+for security_commit in "${PJSIP_SECURITY_COMMITS[@]}"; do
+  security_stamp="$SOURCE_ROOT/.callwave-security-$security_commit"
+  if [[ -f "$security_stamp" ]]; then
+    continue
+  fi
+  git -C "$SOURCE_ROOT" fetch --quiet --depth 2 origin "$security_commit"
+  if git -C "$SOURCE_ROOT" diff "$security_commit^1" "$security_commit" -- \
+      | git -C "$SOURCE_ROOT" apply --check -; then
+    git -C "$SOURCE_ROOT" diff "$security_commit^1" "$security_commit" -- \
+      | git -C "$SOURCE_ROOT" apply -
+  elif ! git -C "$SOURCE_ROOT" diff "$security_commit^1" "$security_commit" -- \
+      | git -C "$SOURCE_ROOT" apply --reverse --check -; then
+    echo "security backport $security_commit does not apply to PJSIP $PJSIP_VERSION" >&2
+    exit 1
+  fi
+  touch "$security_stamp"
+done
+
+# GHSA-rfwg-w9gq-9mw2's master-branch patch includes unrelated 2.18 RED
+# changes, so this narrow 2.17 adaptation applies the same missing upper-bound
+# checks without importing unreleased feature work.
+SDP_BOUNDS_PATCH="$PROJECT_ROOT/Patches/pjsip-2.17-sdp-map-bounds.patch"
+SDP_BOUNDS_STAMP="$SOURCE_ROOT/.callwave-security-sdp-map-bounds"
+if [[ ! -f "$SDP_BOUNDS_STAMP" ]]; then
+  git -C "$SOURCE_ROOT" apply "$SDP_BOUNDS_PATCH"
+  touch "$SDP_BOUNDS_STAMP"
 fi
 
 fetch_opus() {
@@ -286,6 +330,8 @@ cat > "$BUILD_MANIFEST_PATH" <<BUILD_MANIFEST
 PJSIP version: $PJSIP_VERSION
 PJSIP commit: $SOURCE_COMMIT
 PJSIP patches: Patches/sip-auth-client-sha256.patch (SHA-256 digest without OpenSSL)
+PJSIP security backports: ${PJSIP_SECURITY_COMMITS[*]}
+PJSIP adapted security patch: Patches/pjsip-2.17-sdp-map-bounds.patch (GHSA-rfwg-w9gq-9mw2)
 Opus version: $OPUS_VERSION
 Minimum iOS: $MIN_IOS_VERSION
 Architectures: iphoneos/arm64, iphonesimulator/arm64+x86_64

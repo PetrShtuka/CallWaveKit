@@ -40,9 +40,47 @@
 }
 @end
 
+@interface CallWaveDeclineLogProbe : NSObject <CallWaveLogger>
+@property (nonatomic, strong) NSMutableArray<NSString *> *messages;
+@end
+
+@implementation CallWaveDeclineLogProbe
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _messages = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (void)callWaveDidLogMessage:(NSString *)message
+                        level:(CallWaveLogLevel)level
+                     category:(NSString *)category {
+    @synchronized (self) {
+        [self.messages addObject:message];
+    }
+}
+
+- (nullable NSString *)messageContaining:(NSString *)needle {
+    @synchronized (self) {
+        for (NSString *message in self.messages) {
+            if ([message containsString:needle]) {
+                return message;
+            }
+        }
+    }
+    return nil;
+}
+
+@end
+
 @interface CallWaveDeclineTeardownTests : XCTestCase
 @property (nonatomic, assign) int sock;
 @property (nonatomic, strong, nullable) CallWaveClient *client;
+@property (nonatomic, strong) CallWaveDeclineLogProbe *logProbe;
+@property (nonatomic, assign) CallWaveLogLevel previousLogLevel;
+@property (nonatomic, assign) BOOL previousRedaction;
 @end
 
 @implementation CallWaveDeclineTeardownTests
@@ -50,12 +88,22 @@
 - (void)setUp {
     [super setUp];
     _sock = -1;
+    self.logProbe = [[CallWaveDeclineLogProbe alloc] init];
+    self.previousLogLevel = CallWaveLog.level;
+    self.previousRedaction = CallWaveLog.isRedactingIdentifiers;
+    CallWaveLog.level = CallWaveLogLevelDebug;
+    CallWaveLog.redactsIdentifiers = YES;
+    CallWaveLog.logger = self.logProbe;
 }
 
 - (void)tearDown {
     if (_sock >= 0) { close(_sock); _sock = -1; }
     [_client stop];
     _client = nil;
+    CallWaveLog.logger = nil;
+    CallWaveLog.level = self.previousLogLevel;
+    CallWaveLog.redactsIdentifiers = self.previousRedaction;
+    self.logProbe = nil;
     [super tearDown];
 }
 
@@ -125,7 +173,7 @@
         @"t=0 0\r\nm=audio 40002 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
     return [NSString stringWithFormat:
         @"INVITE sip:1001@127.0.0.1 SIP/2.0\r\n"
-        @"Via: SIP/2.0/UDP 127.0.0.1:%d;branch=z9hG4bK-callwave-%@;rport\r\n"
+        @"Via: SIP/2.0/UDP 127.0.0.1:%d;branch=z9hG4bK-callwave-invite;rport\r\n"
         @"Max-Forwards: 70\r\n"
         @"From: \"Front door\" <sip:door@127.0.0.1>;tag=doortag\r\n"
         @"To: <sip:1001@127.0.0.1>\r\n"
@@ -134,7 +182,7 @@
         @"Contact: <sip:door@127.0.0.1:%d>\r\n"
         @"Content-Type: application/sdp\r\n"
         @"Content-Length: %lu\r\n\r\n%@",
-        from, callId, callId, from, (unsigned long)body.length, body];
+        from, callId, from, (unsigned long)body.length, body];
 }
 
 - (CallWaveClient *)startedClient {
@@ -145,11 +193,14 @@
                                            username:@"1001"
                                            password:@"not-a-real-credential"
                              includesCallsInRecents:NO];
+    CallWaveEngineConfiguration *engineConfiguration =
+        [CallWaveEngineConfiguration defaultConfiguration];
+    engineConfiguration.logLevel = CallWaveLogLevelDebug;
     CallWaveClient *client =
         [[CallWaveClient alloc] initWithConfiguration:configuration
                                               options:CallWaveIntegrationOptionNone
                                              provider:nil
-                                  engineConfiguration:nil];
+                                  engineConfiguration:engineConfiguration];
     NSError *error = nil;
     if (![client startWithError:&error]) {
         XCTFail(@"engine did not start: %@", error);
@@ -184,7 +235,10 @@
     delegate.ringing = [self expectationWithDescription:@"ringing"];
     self.client.delegate = delegate;
 
-    NSString *callId = @"callwave-decline-1";
+    NSString *callId = [@"callwave-decline-"
+        stringByPaddingToLength:PJSIP_MAX_URL_SIZE + 32
+                     withString:@"x"
+                startingAtIndex:0];
     [self send:[self inviteFromPort:localPort toPort:enginePort callId:callId]
             to:enginePort];
 
@@ -206,10 +260,27 @@
     XCTAssertNotNil(decline, @"the 603 never reached the wire");
     XCTAssertTrue([decline containsString:callId]);
 
+    NSString *sentLog = [self.logProbe messageContaining:@"603 sent to"];
+    XCTAssertNotNil(sentLog);
+    XCTAssertTrue([sentLog containsString:@"<private>"],
+                  @"the destination and Call-ID should respect identifier redaction");
+    XCTAssertFalse([sentLog containsString:callId]);
+    XCTAssertFalse([sentLog containsString:@"127.0.0.1"]);
+
     // And it is tracked until the peer acknowledges it — the drain condition
     // that pjsua_call_get_count() cannot express.
     XCTAssertEqual(CallWaveTeardownPendingFinalResponses(), 1u,
                    @"an unACKed final response has to hold the drain open");
+
+    // PJSIP retransmits a final response until the ACK arrives. The observer
+    // sees each packet, but all of them belong to one INVITE transaction and
+    // must keep occupying exactly one tracking slot. Otherwise one decline
+    // leaves duplicate entries behind after its ACK and makes later teardown
+    // calls wait on responses that are no longer outstanding.
+    XCTAssertNotNil([self waitForResponseContaining:@"SIP/2.0 603" within:3],
+                    @"the unACKed 603 was not retransmitted");
+    XCTAssertEqual(CallWaveTeardownPendingFinalResponses(), 1u,
+                   @"a retransmission must reuse the original tracking slot");
 
     // The reason the 0.6.0 drain missed this path, pinned as an assertion:
     // PJSUA has already forgotten the call while its final response is still
@@ -222,13 +293,13 @@
 
     [self send:[NSString stringWithFormat:
         @"ACK sip:1001@127.0.0.1 SIP/2.0\r\n"
-        @"Via: SIP/2.0/UDP 127.0.0.1:%d;branch=z9hG4bK-callwave-%@;rport\r\n"
+        @"Via: SIP/2.0/UDP 127.0.0.1:%d;branch=z9hG4bK-callwave-invite;rport\r\n"
         @"Max-Forwards: 70\r\n"
         @"From: \"Front door\" <sip:door@127.0.0.1>;tag=doortag\r\n"
         @"To: <sip:1001@127.0.0.1>\r\n"
         @"Call-ID: %@\r\n"
         @"CSeq: 1 ACK\r\n"
-        @"Content-Length: 0\r\n\r\n", localPort, callId, callId]
+        @"Content-Length: 0\r\n\r\n", localPort, callId]
             to:enginePort];
 
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];

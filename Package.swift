@@ -17,12 +17,13 @@ let package = Package(
         )
     ],
     targets: [
-        // Prebuilt PJSIP 2.17 with Opus and SHA-256 digest support; rebuild
-        // instructions live in Vendor/PJSIP-BUILD.txt.
+        // Prebuilt PJSIP 2.17 with pinned security backports, Opus and SHA-256
+        // digest support; exact provenance lives in Vendor/PJSIP-BUILD.txt.
+        // The artifact is already tracked for CocoaPods, so using that same
+        // copy keeps both package managers on one audited binary.
         .binaryTarget(
             name: "PJSIP",
-            url: "https://github.com/PetrShtuka/CallWaveKit/releases/download/pjsip-2.17-ios15-opus-sha256.2/PJSIP.xcframework.zip",
-            checksum: "f534773f4dc0e813d0e7a7e3be10a751804232721876d1bad286ab3cba0d16a4"
+            path: "Vendor/PJSIP.xcframework"
         ),
         .target(
             name: "CallWaveKit",
