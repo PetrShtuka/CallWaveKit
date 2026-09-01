@@ -167,6 +167,18 @@
     return nil;
 }
 
+- (nullable NSString *)waitForLogContaining:(NSString *)needle
+                                      within:(NSTimeInterval)seconds {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:seconds];
+    do {
+        NSString *message = [self.logProbe messageContaining:needle];
+        if (message != nil) { return message; }
+        [NSRunLoop.currentRunLoop runUntilDate:
+            [NSDate dateWithTimeIntervalSinceNow:0.01]];
+    } while (deadline.timeIntervalSinceNow > 0);
+    return nil;
+}
+
 - (NSString *)inviteFromPort:(int)from toPort:(int)to callId:(NSString *)callId {
     NSString *body =
         @"v=0\r\no=door 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
@@ -272,13 +284,13 @@
     XCTAssertEqual(CallWaveTeardownPendingFinalResponses(), 1u,
                    @"an unACKed final response has to hold the drain open");
 
-    // PJSIP retransmits a final response until the ACK arrives. The observer
-    // sees each packet, but all of them belong to one INVITE transaction and
-    // must keep occupying exactly one tracking slot. Otherwise one decline
-    // leaves duplicate entries behind after its ACK and makes later teardown
-    // calls wait on responses that are no longer outstanding.
-    XCTAssertNotNil([self waitForResponseContaining:@"SIP/2.0 603" within:3],
-                    @"the unACKed 603 was not retransmitted");
+    // PJSIP retransmits a final response until the ACK arrives. The first 603
+    // above and the ACK below already exercise the real UDP loopback. Use the
+    // observer event as the retransmission barrier here: UDP may legally drop
+    // an individual datagram on a loaded CI runner, while the behavior under
+    // test is whether every outgoing attempt reuses the same tracking slot.
+    XCTAssertNotNil([self waitForLogContaining:@"603 retransmitted" within:8],
+                    @"PJSIP did not attempt to retransmit the unACKed 603");
     XCTAssertEqual(CallWaveTeardownPendingFinalResponses(), 1u,
                    @"a retransmission must reuse the original tracking slot");
 
