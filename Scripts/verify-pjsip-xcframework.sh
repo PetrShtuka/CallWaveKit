@@ -5,11 +5,33 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRAMEWORK="$ROOT/Vendor/PJSIP.xcframework"
 EXPECTED_MIN_IOS="${MIN_IOS_VERSION:-15.0}"
+BUILD_MANIFEST="$ROOT/Vendor/PJSIP-BUILD.txt"
+EXPECTED_SECURITY_COMMITS=(
+  acc03b57cef7a7d31b8e1f5b9117437d7e87c591
+  a1b707c0c9b0506faf2a8a438b60f11ffd6a6fd9
+  d6a0e7f76611c3a6f530ee051e3e7a622bb1748c
+  8d5956afab2ede95ddb199078dc19a8ac0114f3d
+  628b71638465bacf66e767959e6acbab822eccd6
+  082948b0a2ed658229fc6a50e475b411c69b0d2a
+  fd9074547f4740de86548076c36d8d25be51fab3
+)
 
 if [[ ! -d "$FRAMEWORK" ]]; then
   echo "missing $FRAMEWORK" >&2
   exit 1
 fi
+if [[ ! -f "$BUILD_MANIFEST" ]]; then
+  echo "missing $BUILD_MANIFEST" >&2
+  exit 1
+fi
+
+for security_commit in "${EXPECTED_SECURITY_COMMITS[@]}"; do
+  if ! grep -Fq "$security_commit" "$BUILD_MANIFEST"; then
+    echo "PJSIP manifest is missing security backport $security_commit" >&2
+    exit 1
+  fi
+done
+grep -Fq 'Patches/pjsip-2.17-sdp-map-bounds.patch' "$BUILD_MANIFEST"
 
 device_library="$FRAMEWORK/ios-arm64/libPJSIP.a"
 simulator_library="$FRAMEWORK/ios-arm64_x86_64-simulator/libPJSIP.a"
@@ -62,4 +84,4 @@ if [[ "$device_all_symbols" != *"_cw_sha256_init"* ]]; then
   exit 1
 fi
 
-echo "PJSIP XCFramework: architectures, iOS floor, Apple TLS, Opus and SHA-256 verified"
+echo "PJSIP XCFramework: architectures, iOS floor, Apple TLS, Opus, SHA-256 and security backports verified"

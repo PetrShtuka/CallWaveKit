@@ -11,6 +11,7 @@
 - (void)audioSessionWasInterrupted:(NSNotification *)notification;
 - (void)pushRegistry:(nullable PKPushRegistry *)registry
 didInvalidatePushTokenForType:(PKPushType)type;
+- (BOOL)claimRuntimeWithError:(NSError **)error;
 @end
 
 @interface CallWaveTokenDelegate : NSObject <CallWaveClientDelegate>
@@ -81,6 +82,29 @@ didInvalidatePushTokenForType:(PKPushType)type;
     XCTAssertTrue(route.isSpeakerActive);
     XCTAssertEqualObjects(route.inputPortTypes, (@[AVAudioSessionPortBluetoothHFP]));
     XCTAssertEqualObjects(route.outputPortTypes, (@[AVAudioSessionPortBuiltInSpeaker]));
+}
+
+- (void)testRuntimeOwnershipIsExclusiveBeforeTheFirstClientFinishesStarting {
+    CallWaveClient *first = [self makeClient];
+    CallWaveClient *second = [self makeClient];
+    NSError *firstError = nil;
+    NSError *secondError = nil;
+
+    XCTAssertTrue([first claimRuntimeWithError:&firstError]);
+    XCTAssertNil(firstError);
+    XCTAssertFalse(first.isRunning,
+                   @"this is the initialization window the ownership guard must cover");
+    XCTAssertFalse([second claimRuntimeWithError:&secondError]);
+    XCTAssertEqual(secondError.code, CallWaveErrorEngineAlreadyRunning);
+
+    // Releases the private claim even though no native runtime was created.
+    [first stop];
+
+    secondError = nil;
+    XCTAssertTrue([second claimRuntimeWithError:&secondError],
+                  @"stop must release an initialization-stage owner");
+    XCTAssertNil(secondError);
+    [second stop];
 }
 
 @end

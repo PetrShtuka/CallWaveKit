@@ -22,6 +22,8 @@
 #import <os/lock.h>
 #import <pthread.h>
 #import <stdatomic.h>
+#import <stdlib.h>
+#import <string.h>
 #import <unistd.h>
 #if __has_include(<PJSIP/pjsua.h>)
 #import <PJSIP/pjsua.h>
@@ -67,7 +69,8 @@ static __weak CallWaveClient *gActiveClient = nil;
 /// `on_call_tsx_state` never fires for one either.
 typedef struct {
     pj_bool_t       inUse;
-    char            callId[PJSIP_MAX_URL_SIZE];
+    char           *callId;
+    pj_size_t       callIdLength;
     int             cseq;
     int             statusCode;
     NSTimeInterval  sentAt;
@@ -90,6 +93,7 @@ static void onCallState(pjsua_call_id callId, pjsip_event *event);
 static void onCallMediaState(pjsua_call_id callId);
 static void onRegistrationState(pjsua_acc_id accId);
 static void onPJLog(int level, const char *data, int length);
+static NSString *stringFromPJString(pj_str_t value);
 
 static pthread_key_t gPJThreadKey;
 static pthread_once_t gPJThreadKeyOnce = PTHREAD_ONCE_INIT;
@@ -149,8 +153,19 @@ static BOOL ensurePJThreadRegistered(const char *name) {
 /// it.
 
 static void forgetFinalResponseLocked(CallWaveFinalResponse *entry) {
+    if (entry->callId != NULL) {
+        free(entry->callId);
+        entry->callId = NULL;
+    }
+    entry->callIdLength = 0;
     entry->inUse = PJ_FALSE;
-    entry->callId[0] = '\0';
+}
+
+static BOOL finalResponseMatchesCallID(const CallWaveFinalResponse *entry,
+                                       pj_str_t callId) {
+    return entry->callId != NULL && callId.ptr != NULL && callId.slen > 0 &&
+        entry->callIdLength == (pj_size_t)callId.slen &&
+        memcmp(entry->callId, callId.ptr, entry->callIdLength) == 0;
 }
 
 /// Number of final responses still waiting for an ACK, reclaiming any that have
@@ -158,6 +173,8 @@ static void forgetFinalResponseLocked(CallWaveFinalResponse *entry) {
 static unsigned pendingFinalResponseCount(void) {
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
     unsigned pending = 0;
+    CallWaveFinalResponse expired[CallWaveMaxTrackedFinalResponses] = {0};
+    unsigned expiredCount = 0;
     os_unfair_lock_lock(&gFinalResponseLock);
     for (int i = 0; i < CallWaveMaxTrackedFinalResponses; i++) {
         CallWaveFinalResponse *entry = &gFinalResponses[i];
@@ -165,16 +182,33 @@ static unsigned pendingFinalResponseCount(void) {
             continue;
         }
         if (now - entry->sentAt > CallWaveFinalResponseLifetime) {
-            CWLogError(CallWaveLogCategoryCall,
-                       @"%d for Call-ID %s was never ACKed within %.0fs. The peer never "
-                       @"confirmed the teardown and may still have the call up.",
-                       entry->statusCode, entry->callId, CallWaveFinalResponseLifetime);
+            expired[expiredCount++] = *entry;
+            // Transfer ownership to the local record so forgetting the slot
+            // does not free the identifier before it is logged below.
+            entry->callId = NULL;
             forgetFinalResponseLocked(entry);
             continue;
         }
         pending++;
     }
     os_unfair_lock_unlock(&gFinalResponseLock);
+
+    // A host logger is arbitrary application code and may call back into the
+    // client. Never invoke it while holding the non-recursive tracking lock.
+    for (unsigned i = 0; i < expiredCount; i++) {
+        CallWaveFinalResponse *entry = &expired[i];
+        NSString *callId = entry->callId != NULL
+            ? [[NSString alloc] initWithBytes:entry->callId
+                                       length:entry->callIdLength
+                                     encoding:NSUTF8StringEncoding]
+            : nil;
+        CWLogError(CallWaveLogCategoryCall,
+                   @"%d for Call-ID %@ was never ACKed within %.0fs. The peer never "
+                   @"confirmed the teardown and may still have the call up.",
+                   entry->statusCode, CWRedact(callId ?: @"<invalid>"),
+                   CallWaveFinalResponseLifetime);
+        free(entry->callId);
+    }
     return pending;
 }
 
@@ -195,37 +229,68 @@ static pj_status_t onFinalResponseSent(pjsip_tx_data *tdata) {
     int code = msg->line.status.code;
     pjsip_cseq_hdr *cseq = PJSIP_MSG_CSEQ_HDR(msg);
     pjsip_cid_hdr *cid = PJSIP_MSG_CID_HDR(msg);
-    if (code < 300 || cseq == NULL || cid == NULL ||
+    if (code < 300 || cseq == NULL || cid == NULL || cid->id.ptr == NULL ||
+        cid->id.slen <= 0 ||
         pjsip_method_cmp(&cseq->method, pjsip_get_invite_method()) != 0) {
         return PJ_SUCCESS;
     }
 
+    // A long-running client may never call the teardown drain between calls.
+    // Reclaim timed-out entries here too, otherwise 32 peers that never ACK
+    // can permanently exhaust the fixed tracking table until logout/stop.
+    (void)pendingFinalResponseCount();
+
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
     os_unfair_lock_lock(&gFinalResponseLock);
     CallWaveFinalResponse *slot = NULL;
+    BOOL retransmission = NO;
     for (int i = 0; i < CallWaveMaxTrackedFinalResponses; i++) {
-        if (!gFinalResponses[i].inUse) {
-            slot = &gFinalResponses[i];
+        CallWaveFinalResponse *entry = &gFinalResponses[i];
+        if (entry->inUse && entry->cseq == cseq->cseq &&
+            finalResponseMatchesCallID(entry, cid->id)) {
+            slot = entry;
+            retransmission = YES;
             break;
         }
+        if (!entry->inUse && slot == NULL) {
+            slot = entry;
+        }
     }
-    if (slot != NULL) {
-        slot->inUse = PJ_TRUE;
-        slot->cseq = cseq->cseq;
-        slot->statusCode = code;
-        slot->sentAt = now;
-        pj_ansi_snprintf(slot->callId, sizeof(slot->callId), "%.*s",
-                         (int)cid->id.slen, cid->id.ptr);
+    if (slot != NULL && !retransmission) {
+        pj_size_t length = (pj_size_t)cid->id.slen;
+        char *copy = malloc(length + 1);
+        if (copy != NULL) {
+            memcpy(copy, cid->id.ptr, length);
+            copy[length] = '\0';
+            slot->inUse = PJ_TRUE;
+            slot->callId = copy;
+            slot->callIdLength = length;
+            slot->cseq = cseq->cseq;
+            slot->statusCode = code;
+            slot->sentAt = now;
+        } else {
+            slot = NULL;
+        }
     }
     os_unfair_lock_unlock(&gFinalResponseLock);
 
     // The destination is the part a host cannot get anywhere else without a
     // packet capture: it says the response reached the transport and where it
     // was addressed.
-    CWLogInfo(CallWaveLogCategoryCall,
-              @"%d sent to %s:%d for Call-ID %.*s, waiting for the ACK",
-              code, tdata->tp_info.dst_name, tdata->tp_info.dst_port,
-              (int)cid->id.slen, cid->id.ptr);
+    NSString *callId = stringFromPJString(cid->id);
+    NSString *destinationName =
+        [NSString stringWithUTF8String:tdata->tp_info.dst_name] ?: @"";
+    NSString *destination = [NSString stringWithFormat:@"%@:%d",
+                             destinationName ?: @"", tdata->tp_info.dst_port];
+    if (retransmission) {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"%d retransmitted to %@ for Call-ID %@, still waiting for the ACK",
+                  code, CWRedact(destination), CWRedact(callId));
+    } else {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"%d sent to %@ for Call-ID %@, waiting for the ACK",
+                  code, CWRedact(destination), CWRedact(callId));
+    }
     if (slot == NULL) {
         CWLogWarning(CallWaveLogCategoryCall,
                      @"no free slot to track %d; its ACK will not be reported", code);
@@ -254,7 +319,7 @@ static pj_bool_t onRequestReceived(pjsip_rx_data *rdata) {
         if (!entry->inUse || entry->cseq != cseq->cseq) {
             continue;
         }
-        if (pj_strcmp2(&cid->id, entry->callId) != 0) {
+        if (!finalResponseMatchesCallID(entry, cid->id)) {
             continue;
         }
         acked = entry->statusCode;
@@ -406,6 +471,10 @@ static NSString *stringFromPJString(pj_str_t value) {
                                   encoding:NSUTF8StringEncoding] ?: @"";
 }
 
+static NSString *stringPayloadValue(id value) {
+    return [value isKindOfClass:NSString.class] ? value : nil;
+}
+
 /// `pjsua_acc_info.expires` is `PJSIP_EXPIRES_NOT_SPECIFIED` (0xFFFFFFFF), not
 /// zero, once the registration session is gone — which is exactly the state a
 /// successful un-REGISTER leaves behind, with `status` still 200. The field is
@@ -555,6 +624,7 @@ static void dispatchMain(dispatch_block_t block) {
 - (void)handleRegistrationStatus:(int)status
                           active:(BOOL)active
                           reason:(NSString *)reason;
++ (void)destroyRuntimeOnQueue:(dispatch_queue_t)queue;
 @end
 
 @implementation CallWaveClient {
@@ -704,14 +774,18 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         BOOL ownsRuntime = NO;
         @synchronized (CallWaveClient.class) {
             ownsRuntime = gActiveClient == self;
-            if (ownsRuntime) {
-                gActiveClient = nil;
-            }
         }
         if (ownsRuntime) {
             // Deliberately not `-stop`: a block that captures `self` during
             // dealloc resurrects it. Only globals are touched here.
             [CallWaveClient destroyRuntimeOnQueue:_sipQueue];
+            // Ownership must cover destruction. Releasing it first lets a new
+            // client initialize PJSUA while this dealloc is tearing it down.
+            @synchronized (CallWaveClient.class) {
+                if (gActiveClient == self) {
+                    gActiveClient = nil;
+                }
+            }
         }
     }
 }
@@ -821,7 +895,10 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 
 - (BOOL)claimRuntimeWithError:(NSError **)error {
     @synchronized (CallWaveClient.class) {
-        if (gActiveClient != nil && gActiveClient != self && gActiveClient.isRunning) {
+        // Ownership begins before PJSUA starts. Looking only at `isRunning`
+        // leaves the whole initialization window unprotected and lets two
+        // clients mutate the process-global runtime from different queues.
+        if (gActiveClient != nil && gActiveClient != self) {
             if (error != NULL) {
                 *error = CallWaveMakeError(CallWaveErrorEngineAlreadyRunning,
                                            @"Another CallWaveClient owns the PJSUA runtime.");
@@ -835,7 +912,16 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 
 - (BOOL)startEngineWithError:(NSError **)error {
     if (self.isRunning) {
-        return YES;
+        BOOL ownsRuntime = NO;
+        @synchronized (CallWaveClient.class) {
+            ownsRuntime = gActiveClient == self;
+        }
+        if (ownsRuntime) {
+            return YES;
+        }
+        // Recover from an interrupted/stale local projection without ever
+        // treating another client's process-global runtime as ours.
+        self.running = NO;
     }
     if (![self validateEngineConfigurationWithError:error]) {
         return NO;
@@ -847,21 +933,47 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     CallWaveLog.level = self.engineConfiguration.logLevel;
 
     __block pj_status_t status = PJ_SUCCESS;
+    __block BOOL ownershipLost = NO;
     [self performSIPSync:^{
-        status = [self startEngineLocked];
-    }];
-    if (status != PJ_SUCCESS) {
         @synchronized (CallWaveClient.class) {
-            if (gActiveClient == self) {
-                gActiveClient = nil;
+            ownershipLost = gActiveClient != self;
+        }
+        if (ownershipLost) {
+            return;
+        }
+        status = [self startEngineLocked];
+        if (status == PJ_SUCCESS) {
+            // Publish success in the same serialized turn as native startup.
+            // A stop already queued behind this block can then reliably win by
+            // setting the state back to stopped, without this method writing a
+            // late `YES` after destruction.
+            self.running = YES;
+        } else {
+            // `startEngineLocked` can fail after pjsua_create()/pjsua_init(). A
+            // partially initialized process-global runtime is not safe to
+            // reuse on the next attempt, so clean and release it before any
+            // queued stop/start transition can run.
+            [CallWaveClient destroyRuntimeOnQueue:self.sipQueue];
+            @synchronized (CallWaveClient.class) {
+                if (gActiveClient == self) {
+                    gActiveClient = nil;
+                }
             }
         }
+    }];
+    if (ownershipLost) {
+        if (error != NULL) {
+            *error = CallWaveMakeError(CallWaveErrorEngineNotRunning,
+                                       @"Engine start was superseded by stop().");
+        }
+        return NO;
+    }
+    if (status != PJ_SUCCESS) {
         if (error != NULL) {
             *error = CallWaveMakeSIPError(status, @"PJSIP start");
         }
         return NO;
     }
-    self.running = YES;
     [self startPathMonitorIfNeeded];
     return YES;
 }
@@ -1395,22 +1507,58 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 }
 
 - (void)stop {
-    if (!self.isRunning && gActiveClient != self) {
+    BOOL shouldStop = self.isRunning;
+    if (!shouldStop) {
+        @synchronized (CallWaveClient.class) {
+            shouldStop = gActiveClient == self;
+        }
+    }
+    if (!shouldStop) {
         return;
     }
 
-    NSArray<CallWaveCall *> *calls = [self.registry removeAllCalls];
+    __block NSArray<CallWaveCall *> *calls = @[];
+    __block BOOL didStop = NO;
     [self performSIPSync:^{
-        ensurePJThreadRegistered("CallWaveStop");
-        for (CallWaveCall *call in calls) {
-            if (call.callId != CallWaveSIPCallIdInvalid && pjsua_call_is_active(call.callId)) {
-                [self endSIPCall:call.callId
-                   declineStatus:PJSIP_SC_DECLINE
-                          reason:@"the engine is stopping"];
+        BOOL ownsRuntime = NO;
+        @synchronized (CallWaveClient.class) {
+            ownsRuntime = gActiveClient == self;
+        }
+        if (!self.isRunning && !ownsRuntime) {
+            return;
+        }
+
+        didStop = YES;
+        calls = [self.registry removeAllCalls];
+        [self stopPathMonitorLocked];
+        if (ownsRuntime) {
+            ensurePJThreadRegistered("CallWaveStop");
+            for (CallWaveCall *call in calls) {
+                if (call.callId != CallWaveSIPCallIdInvalid &&
+                    pjsua_call_is_active(call.callId)) {
+                    [self endSIPCall:call.callId
+                       declineStatus:PJSIP_SC_DECLINE
+                              reason:@"the engine is stopping"];
+                }
+            }
+            // Keep destruction and the published lifecycle transition in this
+            // single queue turn. A push queued after stop will then observe a
+            // fully stopped runtime and restart it; one queued before stop
+            // completes before destruction.
+            [CallWaveClient destroyRuntimeOnQueue:self.sipQueue];
+        }
+        self.running = NO;
+        self.registrationState = CallWaveRegistrationStateStopped;
+        self.registrationError = nil;
+        @synchronized (CallWaveClient.class) {
+            if (gActiveClient == self) {
+                gActiveClient = nil;
             }
         }
-        [self stopPathMonitorLocked];
     }];
+    if (!didStop) {
+        return;
+    }
     // Without this the calls stay on the CallKit call list after the stack is
     // gone, and the user is left looking at a call that cannot be ended.
     dispatchMain(^{
@@ -1422,16 +1570,6 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         [self.callStateMachine resetToIdle];
     });
 
-    [CallWaveClient destroyRuntimeOnQueue:self.sipQueue];
-
-    self.running = NO;
-    self.registrationState = CallWaveRegistrationStateStopped;
-    self.registrationError = nil;
-    @synchronized (CallWaveClient.class) {
-        if (gActiveClient == self) {
-            gActiveClient = nil;
-        }
-    }
 }
 
 #pragma mark - Network and application lifecycle
@@ -1446,7 +1584,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         return;
     }
     [self performSIPAsync:^{
-        if (self.pathMonitor != nil) {
+        if (!self.isRunning || self.pathMonitor != nil) {
             return;
         }
         nw_path_monitor_t monitor = nw_path_monitor_create();
@@ -3163,7 +3301,10 @@ forCallWithUUID:(NSUUID *)uuid
 /// Re-registers so the intercom's INVITE can reach the device, without
 /// recreating the stack.
 - (void)wakeRegistration {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    [self performSIPAsync:^{
+        // Keep the validity check and the operation it guards in the same
+        // serialized queue turn as start/stop. Otherwise stop() can destroy
+        // PJSUA after the check but before registration is refreshed.
         if (!gPJSUAStarted || gAccountId == PJSUA_INVALID_ID || !pjsua_acc_is_valid(gAccountId)) {
             NSError *error = nil;
             if (![self startWithError:&error] && error != nil) {
@@ -3171,11 +3312,9 @@ forCallWithUUID:(NSUUID *)uuid
             }
             return;
         }
-        [self performSIPSync:^{
-            ensurePJThreadRegistered("CallWavePushRegister");
-            pjsua_acc_set_registration(gAccountId, PJ_TRUE);
-        }];
-    });
+        ensurePJThreadRegistered("CallWavePushRegister");
+        pjsua_acc_set_registration(gAccountId, PJ_TRUE);
+    }];
 }
 
 - (void)handleVoIPPushPayload:(NSDictionary *)payload {
@@ -3192,9 +3331,19 @@ forCallWithUUID:(NSUUID *)uuid
     }
 
     NSDictionary *data = [payload[@"data"] isKindOfClass:NSDictionary.class] ? payload[@"data"] : nil;
-    NSString *uuidString = data[@"uuid"] ?: payload[@"uuid"];
-    NSUUID *uuid = uuidString.length > 0 ? [[NSUUID alloc] initWithUUIDString:uuidString] : nil;
-    NSString *caller = data[@"callerID"] ?: data[@"caller"] ?: payload[@"caller_id"];
+    NSString *uuidString = stringPayloadValue(data[@"uuid"]);
+    NSUUID *uuid = uuidString.length > 0
+        ? [[NSUUID alloc] initWithUUIDString:uuidString]
+        : nil;
+    if (uuid == nil) {
+        uuidString = stringPayloadValue(payload[@"uuid"]);
+        uuid = uuidString.length > 0
+            ? [[NSUUID alloc] initWithUUIDString:uuidString]
+            : nil;
+    }
+    NSString *caller = stringPayloadValue(data[@"callerID"]);
+    if (caller.length == 0) caller = stringPayloadValue(data[@"caller"]);
+    if (caller.length == 0) caller = stringPayloadValue(payload[@"caller_id"]);
     if ([self payloadAnnouncesCancellation:payload data:data]) {
         // The caller hung up before anyone answered; `caller` is irrelevant
         // because nothing is ever shown for a cancellation.
@@ -3209,10 +3358,10 @@ forCallWithUUID:(NSUUID *)uuid
 /// second. Hosts with a different marker shape set `pushPayloadParser` and
 /// return a descriptor whose `cancellation` flag is set.
 - (BOOL)payloadAnnouncesCancellation:(NSDictionary *)payload data:(nullable NSDictionary *)data {
-    NSString *type = data[@"type"] ?: data[@"event"] ?: payload[@"type"] ?: payload[@"event"];
-    if (![type isKindOfClass:NSString.class]) {
-        return NO;
-    }
+    NSString *type = stringPayloadValue(data[@"type"]);
+    if (type.length == 0) type = stringPayloadValue(data[@"event"]);
+    if (type.length == 0) type = stringPayloadValue(payload[@"type"]);
+    if (type.length == 0) type = stringPayloadValue(payload[@"event"]);
     NSString *normalized = type.lowercaseString;
     return [normalized isEqualToString:@"cancel"]
         || [normalized isEqualToString:@"cancelled"]

@@ -6,8 +6,46 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Security
+
+- The bundled PJSIP base remains 2.17 for compatibility, but its build now
+  backports the upstream fixes for the Service-Route and SDP `a=crypto` stack
+  overflows, malformed RED negotiation, forged legacy-STUN responses, the SIP
+  header off-by-one, and PJLIB-UTIL HTTP/CLI overflows. The remote payload-type
+  map bounds fix is narrowly adapted to the 2.17 source instead of importing
+  unrelated unreleased 2.18 work; every upstream commit is pinned in the build
+  script and recorded in `Vendor/PJSIP-BUILD.txt`.
+- The built-in VoIP push parser now type-checks UUID and caller fields. An
+  `NSNull`, number or collection supplied by a malformed remote payload used to
+  receive NSString selectors and terminate the process; invalid values now use
+  a generated UUID and the documented `Unknown` caller fallback.
+- Final-response diagnostics now pass both the peer address and Call-ID through
+  identifier redaction. They previously exposed raw SIP identifiers even while
+  `CallWaveLog.redactsIdentifiers` was enabled.
+
 ### Fixed
 
+- PJSUA runtime ownership is claimed for the whole initialization window, not
+  only after `isRunning` becomes true, so two clients cannot initialize the
+  process-global stack concurrently on different queues. Start/stop state is
+  now published in the same serialized queue turn as the native transition,
+  and a failed start destroys every partially initialized PJSIP global before
+  releasing ownership.
+- VoIP-push registration wake-up and `stop()` now perform their PJSIP checks,
+  registration and complete destruction as serialized SIP-queue operations.
+  The previous check ran on a generic queue, allowing `stop()` to destroy the
+  runtime immediately before the push called into it.
+- Final-response tracking stores the complete Call-ID rather than silently
+  truncating it to `PJSIP_MAX_URL_SIZE`; ACKs for longer valid identifiers now
+  release the teardown drain. Expired-entry logging also runs after releasing
+  the tracking lock, so a reentrant host logger cannot deadlock the client.
+  Expired slots are reclaimed during normal call traffic and all remaining
+  transaction records are freed when the PJSUA runtime is destroyed.
+- Retransmissions of the same non-2xx final INVITE response now reuse one
+  teardown tracking entry. Previously every retransmitted `603` occupied a new
+  slot while its ACK cleared only one, leaving phantom unacknowledged responses
+  that delayed later `logout()` and `stop()` calls and eventually exhausted the
+  fixed tracking table.
 - The 0.6.0 teardown drain did not cover a declined call — the case it was
   written for. It waited on `pjsua_call_get_count()`, whose documentation says
   it includes "calls that are no longer active but still in the process of
@@ -26,6 +64,9 @@ bump may contain breaking changes, and each one is listed below.
 
 ### Changed
 
+- SwiftPM and CocoaPods now consume the same vendored PJSIP XCFramework. The
+  old SwiftPM URL still pointed at the immutable, unpatched 2.17 release asset,
+  which would have bypassed the security rebuild used by CocoaPods.
 - The decline path is observed by a `pjsip_module` registered on the endpoint
   ahead of the transaction layer, rather than by PJSUA's per-call
   `on_call_tsx_state`. That callback never fired for a declined call: PJSUA

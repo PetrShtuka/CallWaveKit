@@ -15,7 +15,7 @@ jobs:
     name: Unit tests (iOS Simulator)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Show toolchain
         run: xcodebuild -version
       - name: Verify PJSIP binary
@@ -27,7 +27,7 @@ jobs:
     name: Build for device
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build arm64 device slice
         run: ACTION=build DESTINATION='generic/platform=iOS' ./Scripts/run-package-tests.sh
 
@@ -35,7 +35,7 @@ jobs:
     name: Strict Swift concurrency
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build with complete checking
         run: >-
           ACTION=build DESTINATION='generic/platform=iOS Simulator'
@@ -46,6 +46,6 @@ jobs:
     name: Lint podspec
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: pod lib lint
         run: pod lib lint CallWaveKit.podspec --skip-tests --platforms=ios

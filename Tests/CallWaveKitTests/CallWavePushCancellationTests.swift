@@ -107,6 +107,43 @@ final class CallWavePushCancellationTests: XCTestCase {
         XCTAssertEqual(states().filter { $0 == .incoming }.count, 1)
     }
 
+    func testMalformedBuiltInPayloadFieldsFallBackInsteadOfCrashing() {
+        push(["data": ["uuid": NSNull(), "callerID": NSNull()]])
+
+        XCTAssertEqual(client.callState, .incoming)
+        XCTAssertNotNil(client.currentCallUUID)
+        XCTAssertEqual(client.currentCaller, "Unknown")
+    }
+
+    func testMalformedPreferredFieldsDoNotHideValidFallbacks() {
+        let uuid = UUID()
+        push([
+            "uuid": uuid.uuidString,
+            "caller_id": "top-level",
+            "data": [
+                "uuid": "not-a-uuid",
+                "callerID": NSNull(),
+                "caller": "nested-fallback"
+            ]
+        ])
+
+        XCTAssertEqual(client.currentCallUUID, uuid)
+        XCTAssertEqual(client.currentCaller, "nested-fallback")
+    }
+
+    func testMalformedNestedCancellationMarkerDoesNotHideTopLevelMarker() {
+        let uuid = UUID()
+        push(incomingPayload(uuid: uuid))
+        push([
+            "uuid": uuid.uuidString,
+            "type": "CANCEL",
+            "data": ["type": NSNull()]
+        ])
+
+        XCTAssertEqual(client.callState, .ended)
+        XCTAssertEqual(events.first { $0.type == .callEnded }?.callUUID, uuid)
+    }
+
     func testCustomParserCanMarkAPayloadAsCancellation() {
         let uuid = UUID()
         client.pushPayloadParser = { payload in
