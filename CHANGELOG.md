@@ -25,6 +25,16 @@ bump may contain breaking changes, and each one is listed below.
 
 ### Fixed
 
+- Runtime ownership now uses a separate identity token that survives ARC weak
+  zeroing during deallocation, so releasing a client also destroys its PJSUA
+  runtime and releases an initialization-stage claim.
+- Registration checks, refresh, unregister, logout and account updates validate
+  ownership and operate in the same SIP queue turn as stop. Queue identity is
+  specific to each client, and account state is published before leaving it.
+- Managed CallKit handling reports cancellation, duplicate and stale VoIP
+  payloads before completing them. Cancelled calls are immediately ended;
+  duplicate reports reuse the UUID. Host-owned CallKit handling is unchanged.
+
 - PJSUA runtime ownership is claimed for the whole initialization window, not
   only after `isRunning` becomes true, so two clients cannot initialize the
   process-global stack concurrently on different queues. Start/stop state is
