@@ -17,26 +17,22 @@ also passed the simulator unit suite, generic device build, strict concurrency,
 CocoaPods lint and PJSIP binary verification. Keep the numbered scenarios below
 as the regression matrix for Majordom deployments and future releases.
 
-## 0.6.0 run record
+## 0.6.0 release record
 
-**Status: not run. 0.6.0 was tagged without it**, on the maintainer's decision
-of 2026-08-25. This is a deliberate exception to step 0 of `RELEASING.md`, not
-an oversight, and it is written down here rather than left as an empty table
-somebody later reads as a pass.
+0.6.0 was released without a field pass on the maintainer's decision of
+2026-08-25. Its automated suite passed, but the answer path, push path, audio
+session, call teardown and registration lifecycle were not verified on-device
+for that release.
 
-What that means concretely: 0.6.0 ships with its automated suite green — 131
-tests, thread sanitizer clean, device and strict-concurrency builds, podspec
-lint — and with **no on-device verification of the answer path, the push path,
-the audio session, the call teardown or the registration lifecycle.** The unit
-suite reaches none of them. The largest behavioural change in the release, the
-decline-path fix, was made from a field report and has never been confirmed in
-the field.
+## 0.7.0 run record
 
-The table below stays open. Fill it in whenever the pass happens, on 0.6.0 or
-on whatever ships next, and move this note to match. Nothing below may be
-ticked off from the Simulator, from a code reading or from a green CI run —
-none of those exercise PushKit, the lock screen or a real audio route, which is
-the entire reason this file exists.
+**Status: passed.** On 2026-09-07 the maintainer confirmed the full matrix below
+passed on a physical iPhone against the Majordom PBX. The device model, iOS
+version, transport and log attachments were not recorded in the repository;
+the results below preserve the maintainer's release confirmation.
+
+The automated release suite also passed: 141 tests, generic device Release
+build, strict-concurrency build, podspec lint and PJSIP binary verification.
 
 Since the last recorded pass (0.4.0, 2026-08-04) the answer path, the audio
 session, the call teardown and the account configuration have all moved, so this
@@ -51,32 +47,29 @@ is not a formality:
 | Published state moved behind a lock; the call projection is main-queue only | 7, 9, 10, 14 |
 | 0.5.0: Opus, SHA-256 digest, QoS tagging, quality warnings | 12, 13, 16 |
 
-Scenario 4 is the one to run first. It is the only one with a reported field
-failure behind it — a declined call the PBX kept ringing — and the fix for it is
-the largest behavioural change in this release.
-
-The rest of the list still has to be walked — a regression does not respect the
-diff — but those are the ones that would fail first.
+Scenario 4 was prioritized because it had a reported field failure behind it —
+a declined call the PBX kept ringing — and its fix is the largest behavioural
+change in this release. The full list was then completed.
 
 | # | Scenario | Result | Log attached | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | Cold start, locked screen | | | |
-| 2 | Foreground and background | | | |
-| 3 | Opening the door | | | |
-| 4 | Declining | | | |
-| 5 | The intercom hangs up | | | |
-| 6 | Nobody answers | | | |
-| 7 | Ten calls in a row | | | |
-| 8 | Unregistering between calls | | | |
-| 9 | Two calls at once | | | |
-| 10 | Network handover mid-call | | | |
-| 11 | Push survival | | | |
-| 12 | Audio details | | | |
-| 13 | TLS, if the deployment uses it | | | |
-| 14 | Remote cancellation | | | |
-| 15 | Audio interruption and route loss | | | |
-| 16 | IPv6, NAT64 and TURN | | | |
-| 17 | Session timers | | | |
+| 1 | Cold start, locked screen | Passed | Not recorded | |
+| 2 | Foreground and background | Passed | Not recorded | |
+| 3 | Opening the door | Passed | Not recorded | |
+| 4 | Declining | Passed | Not recorded | |
+| 5 | The intercom hangs up | Passed | Not recorded | |
+| 6 | Nobody answers | Passed | Not recorded | |
+| 7 | Ten calls in a row | Passed | Not recorded | |
+| 8 | Unregistering between calls | Passed | Not recorded | |
+| 9 | Two calls at once | Passed | Not recorded | |
+| 10 | Network handover mid-call | Passed | Not recorded | |
+| 11 | Push survival | Passed | Not recorded | |
+| 12 | Audio details | Passed | Not recorded | |
+| 13 | TLS, if the deployment uses it | Passed | Not recorded | |
+| 14 | Remote cancellation | Passed | Not recorded | |
+| 15 | Audio interruption and route loss | Passed | Not recorded | |
+| 16 | IPv6, NAT64 and TURN | Passed | Not recorded | |
+| 17 | Session timers | Passed | Not recorded | |
 
 Record alongside the table: the device and iOS version, the intercom or PBX
 model, the transport, the date and who ran it. A scenario that was skipped is
