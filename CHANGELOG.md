@@ -6,6 +6,8 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-07
+
 ### Security
 
 - The bundled PJSIP base remains 2.17 for compatibility, but its build now
@@ -34,7 +36,6 @@ bump may contain breaking changes, and each one is listed below.
 - Managed CallKit handling reports cancellation, duplicate and stale VoIP
   payloads before completing them. Cancelled calls are immediately ended;
   duplicate reports reuse the UUID. Host-owned CallKit handling is unchanged.
-
 - PJSUA runtime ownership is claimed for the whole initialization window, not
   only after `isRunning` becomes true, so two clients cannot initialize the
   process-global stack concurrently on different queues. Start/stop state is
