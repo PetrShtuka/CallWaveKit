@@ -309,7 +309,9 @@ application. If CallKit has not called back within `pushCompletionTimeout`
 calls.handleVoIPPushPayload(payload.dictionaryPayload, completion: completion)
 ```
 
-If the server sends a second push to retract the call, use the same UUID:
+Deliver remote cancellation over the existing signalling connection or a
+regular remote notification, rather than sending another VoIP push. Use the
+same UUID:
 
 ```swift
 try await calls.handleCancelledIncomingCall(uuid: callUUID, reason: .remoteEnded)
@@ -317,10 +319,18 @@ try await calls.handleCancelledIncomingCall(uuid: callUUID, reason: .remoteEnded
 
 The method dismisses the pending CallKit call and records the cancellation. A
 late INVITE with that UUID receives `603 Decline` instead of ringing again.
+In managed CallKit mode, an actual VoIP payload marked as cancellation (or a
+late announcement for a cancelled call) is still reported to CallKit and then
+immediately ended. Duplicate announcements are reported with the same UUID so
+CallKit can reject the duplicate without creating a second call. A transient
+system UI may appear for a cancelled call; use the signalling cancellation API
+to avoid it. In host-owned CallKit mode, the host remains responsible for
+reporting every VoIP push and completing its PushKit handler.
+
 `callWaveClientDidInvalidateVoIPPushToken(_:)` tells the host to remove the
 token from its backend.
 
-That method parses `data.uuid` and `data.callerID`. For a different payload
+`handleVoIPPushPayload` parses `data.uuid` and `data.callerID`. For a different payload
 shape, install a parser rather than reimplementing the reporting sequence:
 
 ```swift

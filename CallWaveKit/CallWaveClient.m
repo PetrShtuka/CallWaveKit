@@ -59,6 +59,9 @@ static pjsua_acc_id gAccountId = PJSUA_INVALID_ID;
 static pj_pool_t *gAccountHeaderPool = NULL;
 static NSUInteger gCreatedTransports = 0;
 static __weak CallWaveClient *gActiveClient = nil;
+// Unlike the weak callback target, this identity survives the owner's dealloc.
+// Access only while synchronized on CallWaveClient.class.
+static NSUUID *gRuntimeOwnerToken = nil;
 
 /// One outgoing non-2xx final response to an INVITE, from the moment it is
 /// handed to the transport until the peer ACKs it. Keyed by Call-ID and CSeq
@@ -628,6 +631,7 @@ static void dispatchMain(dispatch_block_t block) {
 @end
 
 @implementation CallWaveClient {
+    NSUUID *_runtimeOwnerToken;
     /// Guards the published state below. Those properties are written on the
     /// main queue but read from the SIP queue, from PJSIP's own callback
     /// threads and from whatever thread the host calls a public method on, so
@@ -727,6 +731,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         // Before anything that goes through a locked accessor, which -setupCallKit
         // below does.
         _stateLock = OS_UNFAIR_LOCK_INIT;
+        _runtimeOwnerToken = [NSUUID UUID];
         _configuration = [configuration copy];
         _engineConfiguration = [engineConfiguration copy]
             ?: [CallWaveEngineConfiguration defaultConfiguration];
@@ -747,7 +752,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         _dtmfMethod = CallWaveDTMFMethodAuto;
         _networkPathSummary = @"unknown";
         _sipQueue = dispatch_queue_create("com.callwave.pjsip", DISPATCH_QUEUE_SERIAL);
-        dispatch_queue_set_specific(_sipQueue, kCallWaveSIPQueueKey, kCallWaveSIPQueueKey, NULL);
+        dispatch_queue_set_specific(_sipQueue, kCallWaveSIPQueueKey, (__bridge void *)_sipQueue, NULL);
         _callController = [[CXCallController alloc] init];
         if (options & CallWaveIntegrationOptionManagesCallKit) {
             [self setupCallKit];
@@ -770,10 +775,10 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     if (_pathMonitor != nil) {
         nw_path_monitor_cancel(_pathMonitor);
     }
-    if (_running) {
+    {
         BOOL ownsRuntime = NO;
         @synchronized (CallWaveClient.class) {
-            ownsRuntime = gActiveClient == self;
+            ownsRuntime = gRuntimeOwnerToken == _runtimeOwnerToken;
         }
         if (ownsRuntime) {
             // Deliberately not `-stop`: a block that captures `self` during
@@ -782,8 +787,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
             // Ownership must cover destruction. Releasing it first lets a new
             // client initialize PJSUA while this dealloc is tearing it down.
             @synchronized (CallWaveClient.class) {
-                if (gActiveClient == self) {
+                if (gRuntimeOwnerToken == _runtimeOwnerToken) {
                     gActiveClient = nil;
+                    gRuntimeOwnerToken = nil;
                 }
             }
         }
@@ -794,7 +800,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 
 /// Runs `block` on `sipQueue` and waits. Safe to call from `sipQueue` itself.
 - (void)performSIPSync:(NS_NOESCAPE dispatch_block_t)block {
-    if (dispatch_get_specific(kCallWaveSIPQueueKey) != NULL) {
+    if (dispatch_get_specific(kCallWaveSIPQueueKey) == (__bridge void *)self.sipQueue) {
         block();
         return;
     }
@@ -898,13 +904,14 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         // Ownership begins before PJSUA starts. Looking only at `isRunning`
         // leaves the whole initialization window unprotected and lets two
         // clients mutate the process-global runtime from different queues.
-        if (gActiveClient != nil && gActiveClient != self) {
+        if (gRuntimeOwnerToken != nil && gRuntimeOwnerToken != _runtimeOwnerToken) {
             if (error != NULL) {
                 *error = CallWaveMakeError(CallWaveErrorEngineAlreadyRunning,
                                            @"Another CallWaveClient owns the PJSUA runtime.");
             }
             return NO;
         }
+        gRuntimeOwnerToken = _runtimeOwnerToken;
         gActiveClient = self;
     }
     return YES;
@@ -914,7 +921,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     if (self.isRunning) {
         BOOL ownsRuntime = NO;
         @synchronized (CallWaveClient.class) {
-            ownsRuntime = gActiveClient == self;
+            ownsRuntime = gRuntimeOwnerToken == _runtimeOwnerToken;
         }
         if (ownsRuntime) {
             return YES;
@@ -936,7 +943,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     __block BOOL ownershipLost = NO;
     [self performSIPSync:^{
         @synchronized (CallWaveClient.class) {
-            ownershipLost = gActiveClient != self;
+            ownershipLost = gRuntimeOwnerToken != _runtimeOwnerToken;
         }
         if (ownershipLost) {
             return;
@@ -955,8 +962,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
             // queued stop/start transition can run.
             [CallWaveClient destroyRuntimeOnQueue:self.sipQueue];
             @synchronized (CallWaveClient.class) {
-                if (gActiveClient == self) {
+                if (gRuntimeOwnerToken == _runtimeOwnerToken) {
                     gActiveClient = nil;
+                    gRuntimeOwnerToken = nil;
                 }
             }
         }
@@ -1018,29 +1026,35 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     }
 
     CallWaveConfiguration *copy = [configuration copy];
-    self.registrationState = CallWaveRegistrationStateRegistering;
-
-    __block pj_status_t status = PJ_SUCCESS;
+    __block NSError *failure = nil;
+    __block BOOL recentsChanged = NO;
     [self performSIPSync:^{
-        status = [self applyConfigurationLocked:copy];
-    }];
-
-    if (status != PJ_SUCCESS) {
-        NSError *failure = CallWaveMakeSIPError(status, @"SIP account setup");
-        self.registrationState = CallWaveRegistrationStateFailed;
-        self.registrationError = failure;
-        if (error != NULL) {
-            *error = failure;
+        BOOL ownsRuntime;
+        @synchronized (CallWaveClient.class) {
+            ownsRuntime = gRuntimeOwnerToken == _runtimeOwnerToken;
         }
+        if (!ownsRuntime || !self.isRunning) {
+            failure = CallWaveMakeError(CallWaveErrorEngineNotRunning,
+                                       @"Account update was superseded by stop().");
+            return;
+        }
+        self.registrationState = CallWaveRegistrationStateRegistering;
+        pj_status_t status = [self applyConfigurationLocked:copy];
+        if (status != PJ_SUCCESS) {
+            failure = CallWaveMakeSIPError(status, @"SIP account setup");
+            self.registrationState = CallWaveRegistrationStateFailed;
+            self.registrationError = failure;
+            return;
+        }
+        recentsChanged = self.configuration.includesCallsInRecents != copy.includesCallsInRecents;
+        self.configuration = copy;
+    }];
+    if (failure != nil) {
+        if (error != NULL) *error = failure;
         return NO;
     }
-
-    BOOL recentsChanged = self.configuration.includesCallsInRecents != copy.includesCallsInRecents;
-    self.configuration = copy;
     if (recentsChanged && self.managesCallKit) {
-        dispatchMain(^{
-            [self refreshProviderConfiguration];
-        });
+        dispatchMain(^{ [self refreshProviderConfiguration]; });
     }
     return YES;
 }
@@ -1256,6 +1270,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 /// Swaps the SIP account in place. The PJSUA runtime is never destroyed, so
 /// this is safe to run for every incoming call. Must run on `sipQueue`.
 - (pj_status_t)applyConfigurationLocked:(CallWaveConfiguration *)configuration {
+    @synchronized (CallWaveClient.class) {
+        if (gRuntimeOwnerToken != _runtimeOwnerToken) return PJ_EINVALIDOP;
+    }
     if (!gPJSUAStarted) {
         return PJ_EINVALIDOP;
     }
@@ -1368,16 +1385,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 }
 
 - (BOOL)isRegistered {
-    if (!gPJSUAStarted || gAccountId == PJSUA_INVALID_ID) {
-        return NO;
-    }
-
     __block BOOL registered = NO;
     [self performSIPSync:^{
-        ensurePJThreadRegistered("CallWaveRegistrationCheck");
-        if (!pjsua_acc_is_valid(gAccountId)) {
-            return;
-        }
+        if (![self validateAccountWithError:NULL]) return;
         pjsua_acc_info info;
         if (pjsua_acc_get_info(gAccountId, &info) == PJ_SUCCESS) {
             registered = registrationIsActive(&info);
@@ -1386,15 +1396,21 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     return registered;
 }
 
+/// Must be called on this client's SIP queue, in the same turn as the operation.
 - (BOOL)validateAccountWithError:(NSError **)error {
-    if (!self.isRunning) {
+    BOOL ownsRuntime;
+    @synchronized (CallWaveClient.class) {
+        ownsRuntime = gRuntimeOwnerToken == _runtimeOwnerToken;
+    }
+    if (!ownsRuntime || !self.isRunning) {
         if (error != NULL) {
             *error = CallWaveMakeError(CallWaveErrorEngineNotRunning,
                                        @"CallWaveClient must be started first.");
         }
         return NO;
     }
-    if (!gPJSUAStarted || gAccountId == PJSUA_INVALID_ID || !pjsua_acc_is_valid(gAccountId)) {
+    if (!gPJSUAStarted || !ensurePJThreadRegistered("CallWaveAccountCheck") ||
+        gAccountId == PJSUA_INVALID_ID || !pjsua_acc_is_valid(gAccountId)) {
         if (error != NULL) {
             *error = CallWaveMakeError(CallWaveErrorSIPFailure,
                                        @"The SIP account is not available.");
@@ -1407,22 +1423,14 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 - (BOOL)setRegistrationEnabled:(BOOL)enabled
                        context:(NSString *)context
                          error:(NSError **)error {
-    if (![self validateAccountWithError:error]) {
-        return NO;
-    }
-
-    __block pj_status_t status = PJ_EUNKNOWN;
+    __block NSError *failure = nil;
     [self performSIPSync:^{
-        ensurePJThreadRegistered("CallWaveRegistration");
-        status = pjsua_acc_set_registration(gAccountId, enabled ? PJ_TRUE : PJ_FALSE);
+        if (![self validateAccountWithError:&failure]) return;
+        pj_status_t status = pjsua_acc_set_registration(gAccountId, enabled ? PJ_TRUE : PJ_FALSE);
+        if (status != PJ_SUCCESS) failure = CallWaveMakeSIPError(status, context);
     }];
-    if (status != PJ_SUCCESS) {
-        if (error != NULL) {
-            *error = CallWaveMakeSIPError(status, context);
-        }
-        return NO;
-    }
-    return YES;
+    if (failure != nil && error != NULL) *error = failure;
+    return failure == nil;
 }
 
 - (BOOL)refreshRegistrationWithError:(NSError **)error {
@@ -1432,46 +1440,40 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 /// Sends `REGISTER` with `Expires: 0` and keeps the account, so a later
 /// `-refreshRegistrationWithError:` re-registers without rebuilding anything.
 - (BOOL)unregisterWithError:(NSError **)error {
-    if (![self validateAccountWithError:error]) {
-        return NO;
-    }
-
-    __block BOOL hasSession = NO;
+    __block NSError *failure = nil;
     [self performSIPSync:^{
-        ensurePJThreadRegistered("CallWaveUnregisterCheck");
+        if (![self validateAccountWithError:&failure]) return;
         pjsua_acc_info info;
-        if (pjsua_acc_get_info(gAccountId, &info) == PJ_SUCCESS) {
-            hasSession = info.expires != PJSIP_EXPIRES_NOT_SPECIFIED && info.expires > 0;
+        pj_status_t status = pjsua_acc_get_info(gAccountId, &info);
+        if (status == PJ_SUCCESS) {
+            if (info.expires == PJSIP_EXPIRES_NOT_SPECIFIED || info.expires == 0) {
+                self.registrationState = CallWaveRegistrationStateStopped;
+                return;
+            }
+            status = pjsua_acc_set_registration(gAccountId, PJ_FALSE);
         }
+        if (status != PJ_SUCCESS) failure = CallWaveMakeSIPError(status, @"Unregister");
     }];
-    if (!hasSession) {
-        // PJSUA answers PJ_EINVALIDOP when there is no session to close, which
-        // would turn an unregister-after-every-call into a spurious error.
-        self.registrationState = CallWaveRegistrationStateStopped;
-        return YES;
-    }
-
-    return [self setRegistrationEnabled:NO context:@"Unregister" error:error];
+    if (failure != nil && error != NULL) *error = failure;
+    return failure == nil;
 }
 
 - (BOOL)logoutWithError:(NSError **)error {
-    if (![self validateAccountWithError:error]) {
-        return NO;
-    }
-
+    __block NSError *failure = nil;
     [self performSIPSync:^{
-        ensurePJThreadRegistered("CallWaveLogout");
+        if (![self validateAccountWithError:&failure]) return;
         pjsua_acc_set_registration(gAccountId, PJ_FALSE);
         deleteAccountLocked();
         if (gAccountHeaderPool != NULL) {
             pj_pool_release(gAccountHeaderPool);
             gAccountHeaderPool = NULL;
         }
+        self.configuration = nil;
+        self.registrationState = CallWaveRegistrationStateStopped;
+        self.registrationError = nil;
     }];
-    self.configuration = nil;
-    self.registrationState = CallWaveRegistrationStateStopped;
-    self.registrationError = nil;
-    return YES;
+    if (failure != nil && error != NULL) *error = failure;
+    return failure == nil;
 }
 
 + (void)destroyRuntimeOnQueue:(dispatch_queue_t)queue {
@@ -1499,7 +1501,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         gCreatedTransports = 0;
     };
 
-    if (dispatch_get_specific(kCallWaveSIPQueueKey) != NULL) {
+    if (dispatch_get_specific(kCallWaveSIPQueueKey) == (__bridge void *)queue) {
         teardown();
     } else {
         dispatch_sync(queue, teardown);
@@ -1510,7 +1512,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     BOOL shouldStop = self.isRunning;
     if (!shouldStop) {
         @synchronized (CallWaveClient.class) {
-            shouldStop = gActiveClient == self;
+            shouldStop = gRuntimeOwnerToken == _runtimeOwnerToken;
         }
     }
     if (!shouldStop) {
@@ -1522,7 +1524,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     [self performSIPSync:^{
         BOOL ownsRuntime = NO;
         @synchronized (CallWaveClient.class) {
-            ownsRuntime = gActiveClient == self;
+            ownsRuntime = gRuntimeOwnerToken == _runtimeOwnerToken;
         }
         if (!self.isRunning && !ownsRuntime) {
             return;
@@ -1551,8 +1553,9 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         self.registrationState = CallWaveRegistrationStateStopped;
         self.registrationError = nil;
         @synchronized (CallWaveClient.class) {
-            if (gActiveClient == self) {
+            if (gRuntimeOwnerToken == _runtimeOwnerToken) {
                 gActiveClient = nil;
+                gRuntimeOwnerToken = nil;
             }
         }
     }];
@@ -2995,7 +2998,7 @@ forCallWithUUID:(NSUUID *)uuid
             }];
         }
         CWLogInfo(CallWaveLogCategoryPush, @"incoming call %@ was retracted by the server",
-                  uuid.UUIDString);
+                  CWRedact(uuid.UUIDString));
         [self reportCallEndedWithUUID:uuid reason:reason];
         [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
         if (call.callId == CallWaveSIPCallIdInvalid) {
@@ -3305,7 +3308,7 @@ forCallWithUUID:(NSUUID *)uuid
         // Keep the validity check and the operation it guards in the same
         // serialized queue turn as start/stop. Otherwise stop() can destroy
         // PJSUA after the check but before registration is refreshed.
-        if (!gPJSUAStarted || gAccountId == PJSUA_INVALID_ID || !pjsua_acc_is_valid(gAccountId)) {
+        if (![self validateAccountWithError:NULL]) {
             NSError *error = nil;
             if (![self startWithError:&error] && error != nil) {
                 CWLogError(CallWaveLogCategoryPush, @"start after VoIP push failed: %@", error);
@@ -3392,19 +3395,40 @@ forCallWithUUID:(NSUUID *)uuid
             acknowledge(@"deadline");
         });
 
+        CallWaveCall *existing = [self.registry callForUUID:descriptor.uuid];
+        BOOL cancelled = descriptor.isCancellation || existing.isCancelledBeforeInvite;
+        if (self.managesCallKit && (cancelled || existing.reportedToCallKit)) {
+            // Even a duplicate or stale VoIP push must reach CallKit. Reusing
+            // the UUID lets CallKit reject a duplicate without a second call.
+            // Cancellation is applied only after submitting the required report.
+            CXCallUpdate *update = [[CXCallUpdate alloc] init];
+            update.remoteHandle = [[CXHandle alloc] initWithType:CXHandleTypeGeneric
+                value:descriptor.caller.length > 0 ? descriptor.caller : self.defaultCallerName];
+            CXProvider *provider = self.provider;
+            [provider reportNewIncomingCallWithUUID:descriptor.uuid update:update
+                                        completion:^(NSError *error) {
+                dispatchMain(^{
+                    if (cancelled) {
+                        [provider reportCallWithUUID:descriptor.uuid endedAtDate:nil
+                                              reason:CXCallEndedReasonRemoteEnded];
+                        [self handleCancelledIncomingCallWithUUID:descriptor.uuid
+                            reason:CXCallEndedReasonRemoteEnded completion:^(NSError *cancelError) {
+                                acknowledge(@"cancelled call reported to CallKit");
+                            }];
+                    } else {
+                        acknowledge(@"duplicate reported to CallKit");
+                    }
+                });
+            }];
+            return;
+        }
         if (descriptor.isCancellation) {
-            // A cancellation is not an incoming call: reporting it to CallKit
-            // would flash an incoming-call screen for a call that no longer
-            // exists. It ends or suppresses the call it names instead —
-            // including the tombstone case, where the cancellation overtook
-            // the announcement push.
+            // In host-owned mode the host owns CallKit reporting and PushKit
+            // completion; this only updates the SDK's cancellation state.
             [self handleCancelledIncomingCallWithUUID:descriptor.uuid
                                                reason:CXCallEndedReasonRemoteEnded
                                            completion:^(NSError *error) {
-                dispatchMain(^{
-                    acknowledge(error == nil ? @"cancellation handled"
-                                             : @"cancellation handling failed");
-                });
+                dispatchMain(^{ acknowledge(@"cancellation handled"); });
             }];
             return;
         }
