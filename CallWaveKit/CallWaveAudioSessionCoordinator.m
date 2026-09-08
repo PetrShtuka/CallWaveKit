@@ -109,9 +109,7 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
         // Renamed to …AllowBluetoothHFP in the iOS 26 SDK; same raw value.
         AVAudioSessionCategoryOptionAllowBluetooth;
 #endif
-    if (self.desiredSpeakerEnabled) {
-        options |= AVAudioSessionCategoryOptionDefaultToSpeaker;
-    }
+
     if ([session setCategory:AVAudioSessionCategoryPlayAndRecord
                         mode:AVAudioSessionModeVoiceChat
                      options:options
@@ -219,17 +217,35 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
 
 #pragma mark - AVAudioSession notifications
 
+- (CallWaveAudioRoute *)readCurrentAudioRoute {
+    return [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
+}
+
+- (BOOL)restoreSpeakerWithError:(NSError **)error {
+    return [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
+                                                           error:error];
+}
+
 - (void)handleRouteChangeNotification:(NSNotification *)notification {
+    CallWaveAudioRoute *route = [self readCurrentAudioRoute];
     AVAudioSessionRouteChangeReason reason =
         [notification.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
-    CallWaveAudioRoute *route =
-        [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
-    // Let newly connected headphones take over; restore the preference on removal.
-    if (reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable &&
-        self.desiredSpeakerEnabled && !route.isSpeakerActive) {
+    BOOL externalOutput = NO;
+    for (NSString *port in route.outputPortTypes) {
+        if (![port isEqualToString:AVAudioSessionPortBuiltInSpeaker] &&
+            ![port isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
+            externalOutput = YES;
+        }
+    }
+    // CallKit's speaker button changes AVAudioSession directly. Treat that
+    // override (and a newly selected accessory) as the user's new preference.
+    // Restoring our old preference here would immediately undo their action.
+    if (reason == AVAudioSessionRouteChangeReasonOverride || externalOutput) {
+        self.desiredSpeakerEnabled = route.isSpeakerActive;
+    } else if (self.desiredSpeakerEnabled && !route.isSpeakerActive &&
+               reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
         NSError *error = nil;
-        [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
-                                                         error:&error];
+        [self restoreSpeakerWithError:&error];
         if (error != nil) {
             CWLogWarning(CallWaveLogCategoryAudio,
                          @"could not restore the speaker after a route change: %@", error);
