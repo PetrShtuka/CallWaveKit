@@ -361,6 +361,32 @@ so the exchange happens on a timescale a human can sit through, leave
   call; if the Majordom PBX cannot do session timers, record that here and keep
   `.optional` as the shipped default.
 
+### 18. Speaker off and headset routing
+
+Added with the speaker-routing fix after 0.7.0. **Not yet verified on-device**;
+the 0.7.0 pass above does not cover this scenario.
+
+Use Majordom in host-owned mode (`options: []`, with the host's `CXProvider`
+and `PKPushRegistry`) and answer a real intercom call on a physical iPhone.
+
+1. With no headset connected, enable speakerphone and confirm sound comes
+   from the loudspeaker and `currentAudioRoute.isSpeakerActive` becomes `true`.
+2. Call `setSpeakerEnabled(false)`. Confirm it succeeds, sound moves to the
+   receiver at the ear, and `currentAudioRoute.isSpeakerActive` becomes `false`
+   after the route update. Check the host's button follows that reported route.
+3. Enable speakerphone again and confirm both sound and the reported route.
+4. Connect a Bluetooth headset during the call. Audio must stay in the headset,
+   and the reported speaker state must become `false`, without the library
+   forcing the speaker back on.
+5. Disconnect the headset. The saved speaker preference must restore the
+   loudspeaker and the reported speaker state must become `true`.
+6. Disable speakerphone again, then connect and disconnect the headset.
+   Audio must return to the receiver with the speaker state `false`.
+
+Repeat the headset steps with wired headphones. Also repeat scenario 15 with
+speakerphone disabled before the interruption: reactivation must preserve that
+preference. Record audible output and route updates, not just method success.
+
 ## Reporting a field failure
 
 Attach the console log for the whole call, from the push to the end, and state:

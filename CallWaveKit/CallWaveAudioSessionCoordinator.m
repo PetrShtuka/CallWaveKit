@@ -104,12 +104,14 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
     NSError *categoryError = nil;
     AVAudioSessionCategoryOptions options =
 #if defined(__IPHONE_26_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_26_0
-        AVAudioSessionCategoryOptionAllowBluetoothHFP |
+        AVAudioSessionCategoryOptionAllowBluetoothHFP;
 #else
         // Renamed to …AllowBluetoothHFP in the iOS 26 SDK; same raw value.
-        AVAudioSessionCategoryOptionAllowBluetooth |
+        AVAudioSessionCategoryOptionAllowBluetooth;
 #endif
-        AVAudioSessionCategoryOptionDefaultToSpeaker;
+    if (self.desiredSpeakerEnabled) {
+        options |= AVAudioSessionCategoryOptionDefaultToSpeaker;
+    }
     if ([session setCategory:AVAudioSessionCategoryPlayAndRecord
                         mode:AVAudioSessionModeVoiceChat
                      options:options
@@ -188,13 +190,21 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
 #pragma mark - Speaker
 
 - (BOOL)setSpeakerEnabled:(BOOL)enabled error:(NSError **)error {
-    [self configureAudioSessionWithError:NULL];
+    BOOL previousSpeakerEnabled = self.desiredSpeakerEnabled;
+    self.desiredSpeakerEnabled = enabled;
+    if (![self configureAudioSessionWithError:error]) {
+        self.desiredSpeakerEnabled = previousSpeakerEnabled;
+        return NO;
+    }
     NSError *routeError = nil;
     BOOL changed = [AVAudioSession.sharedInstance
         overrideOutputAudioPort:enabled ? AVAudioSessionPortOverrideSpeaker
                                         : AVAudioSessionPortOverrideNone
                           error:&routeError];
     if (!changed) {
+        self.desiredSpeakerEnabled = previousSpeakerEnabled;
+        // Restore the category default as well as the preference after failure.
+        [self configureAudioSessionWithError:NULL];
         CWLogError(CallWaveLogCategoryAudio, @"route change failed: %@", routeError);
         if (error != NULL) {
             *error = routeError ?: CallWaveMakeError(CallWaveErrorCallActionFailed,
@@ -202,7 +212,6 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
         }
     }
     if (changed) {
-        self.desiredSpeakerEnabled = enabled;
         [self publishCurrentAudioRoute];
     }
     return changed;
@@ -211,9 +220,13 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
 #pragma mark - AVAudioSession notifications
 
 - (void)handleRouteChangeNotification:(NSNotification *)notification {
+    AVAudioSessionRouteChangeReason reason =
+        [notification.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
     CallWaveAudioRoute *route =
         [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
-    if (self.desiredSpeakerEnabled && !route.isSpeakerActive) {
+    // Let newly connected headphones take over; restore the preference on removal.
+    if (reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable &&
+        self.desiredSpeakerEnabled && !route.isSpeakerActive) {
         NSError *error = nil;
         [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
                                                          error:&error];

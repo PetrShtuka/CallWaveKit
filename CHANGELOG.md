@@ -6,6 +6,23 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Fixed
+
+- Disabling speakerphone now removes `defaultToSpeaker` before clearing the
+  output override, allowing audio to return to the receiver. Failed speaker
+  changes restore the previous preference; an override failure also attempts
+  to restore the category configuration.
+- Connecting headphones during a call no longer forces audio back to the
+  speaker. A saved speaker preference is restored on `oldDeviceUnavailable`,
+  rather than on every route change.
+
+### Changed
+
+- The audio category includes `defaultToSpeaker` only while speakerphone is
+  requested. Hosts that never call `setSpeakerEnabled` no longer receive this
+  category option. CallKit controls activation and initial routing; the normal
+  built-in route remains the receiver when no external device is selected.
+
 ## [0.7.0] - 2026-09-07
 
 ### Security
