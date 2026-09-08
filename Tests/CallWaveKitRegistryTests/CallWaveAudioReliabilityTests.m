@@ -4,6 +4,7 @@
 #import "CallWaveClient.h"
 #import "CallWaveCallRegistry.h"
 #import "CallWaveAudioRouteInternal.h"
+#import "CallWaveAudioSessionCoordinator.h"
 
 // Private entry points are redeclared here so the tests can drive the audio
 // coordinator paths without changing the public API. `registry`,
@@ -19,10 +20,70 @@
 - (void)audioMediaServicesWereReset:(NSNotification *)notification;
 @end
 
+
+@interface CallWaveTestAudioCoordinator : CallWaveAudioSessionCoordinator
+@property (nonatomic, strong) CallWaveAudioRoute *testRoute;
+@property (nonatomic, assign) NSUInteger restoreCount;
+@end
+@implementation CallWaveTestAudioCoordinator
+- (CallWaveAudioRoute *)readCurrentAudioRoute { return self.testRoute; }
+- (BOOL)restoreSpeakerWithError:(NSError **)error {
+    self.restoreCount += 1;
+    return YES;
+}
+@end
+
 @interface CallWaveAudioReliabilityTests : XCTestCase
 @end
 
 @implementation CallWaveAudioReliabilityTests
+
+
+- (void)testCallKitReceiverSelectionDoesNotRestoreSpeaker {
+    CallWaveTestAudioCoordinator *audio = [CallWaveTestAudioCoordinator new];
+    audio.desiredSpeakerEnabled = YES;
+    audio.testRoute = [[CallWaveAudioRoute alloc]
+        initWithInputPortTypes:@[AVAudioSessionPortBuiltInMic]
+        outputPortTypes:@[AVAudioSessionPortBuiltInReceiver]];
+    [audio handleRouteChangeNotification:[NSNotification
+        notificationWithName:AVAudioSessionRouteChangeNotification object:nil
+        userInfo:@{AVAudioSessionRouteChangeReasonKey: @(AVAudioSessionRouteChangeReasonOverride)}]];
+    XCTAssertFalse(audio.desiredSpeakerEnabled);
+    XCTAssertEqual(audio.restoreCount, 0u);
+}
+
+- (void)testCallKitSpeakerSelectionUpdatesPreference {
+    CallWaveTestAudioCoordinator *audio = [CallWaveTestAudioCoordinator new];
+    audio.testRoute = [[CallWaveAudioRoute alloc]
+        initWithInputPortTypes:@[AVAudioSessionPortBuiltInMic]
+        outputPortTypes:@[AVAudioSessionPortBuiltInSpeaker]];
+    [audio handleRouteChangeNotification:[NSNotification
+        notificationWithName:AVAudioSessionRouteChangeNotification object:nil
+        userInfo:@{AVAudioSessionRouteChangeReasonKey: @(AVAudioSessionRouteChangeReasonOverride)}]];
+    XCTAssertTrue(audio.desiredSpeakerEnabled);
+    XCTAssertEqual(audio.restoreCount, 0u);
+}
+
+- (void)testSelectingHeadsetDoesNotRestoreSpeaker {
+    CallWaveTestAudioCoordinator *audio = [CallWaveTestAudioCoordinator new];
+    audio.desiredSpeakerEnabled = YES;
+    audio.testRoute = [[CallWaveAudioRoute alloc]
+        initWithInputPortTypes:@[AVAudioSessionPortBluetoothHFP]
+        outputPortTypes:@[AVAudioSessionPortBluetoothHFP]];
+    [audio handleRouteChangeNotification:[NSNotification
+        notificationWithName:AVAudioSessionRouteChangeNotification object:nil
+        userInfo:@{AVAudioSessionRouteChangeReasonKey: @(AVAudioSessionRouteChangeReasonNewDeviceAvailable)}]];
+    XCTAssertFalse(audio.desiredSpeakerEnabled);
+    XCTAssertEqual(audio.restoreCount, 0u);
+}
+
+- (void)testConfigurationAllowsReturningToReceiver {
+    CallWaveAudioSessionCoordinator *audio = [CallWaveAudioSessionCoordinator new];
+    NSError *error = nil;
+    XCTAssertTrue([audio configureAudioSessionWithError:&error], @"%@", error);
+    XCTAssertEqual(AVAudioSession.sharedInstance.categoryOptions &
+                   AVAudioSessionCategoryOptionDefaultToSpeaker, 0u);
+}
 
 - (CallWaveClient *)makeClient {
     return [[CallWaveClient alloc] initWithConfiguration:nil

@@ -50,7 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) BOOL audioSessionActive;
 
 /// The user's speaker choice. Survives route losses and session reactivation;
-/// only `-setSpeakerEnabled:error:` changes it.
+/// updated by the API and by system route selections (including CallKit).
 @property (nonatomic, assign) BOOL desiredSpeakerEnabled;
 
 @property (nonatomic, strong, readonly) CallWaveAudioRoute *currentAudioRoute;

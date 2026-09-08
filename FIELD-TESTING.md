@@ -9,6 +9,15 @@ done by hand, on a device, against an intercom.
 Run it before tagging a release, and after any change to the answer path, the
 push path, the audio session or the registration lifecycle.
 
+## 0.7.1 run record
+
+Physical-device pass: **not run**. The release is authorized to deliver the
+speaker-routing fix for another on-device QA run. Automated audio regression
+coverage includes system speaker/receiver selection and headset selection.
+Verify CallKit Speaker on/off repeatedly, repeat from the app, then interrupt
+and resume the call and connect/disconnect a headset. Confirm actual playback,
+not only the selected button.
+
 ## 0.4.0 release record
 
 On 2026-08-04 the maintainer confirmed registration and a real incoming call
