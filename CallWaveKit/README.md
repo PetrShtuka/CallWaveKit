@@ -204,6 +204,10 @@ from a VoIP push on every call — unlike a `stop()`/`start()` cycle, which mean
 `pjsua_destroy()`/`pjsua_create()` in the background. An identical configuration
 only refreshes the registration.
 
+A push that arrives before the first `login(configuration:)` finds no account
+to refresh. The library logs one informational line and waits for that login,
+which starts the stack itself.
+
 Between calls, release the account without tearing the stack down:
 
 ```swift

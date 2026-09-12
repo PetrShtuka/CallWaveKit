@@ -6,6 +6,19 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+### Fixed
+
+- A VoIP push that arrives before the host has called
+  `loginWithConfiguration:` no longer runs the full start path and fails with
+  `CallWaveErrorNotConfigured`. With no credentials there is nothing to
+  register, and the login that follows the push starts the stack itself, so the
+  registration nudge now logs one informational line instead of an error on
+  every call.
+- A push handled in host-owned CallKit mode nudges the registration once.
+  `-handleVoIPPushPayload:completion:` used to add a second nudge on top of the
+  one `-prepareIncomingCallWithUUID:caller:` already performs, sending two
+  `REGISTER`s per call.
+
 ## [0.7.1] - 2026-09-08
 
 ### Fixed
