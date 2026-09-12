@@ -18,6 +18,12 @@ bump may contain breaking changes, and each one is listed below.
   `-handleVoIPPushPayload:completion:` used to add a second nudge on top of the
   one `-prepareIncomingCallWithUUID:caller:` already performs, sending two
   `REGISTER`s per call.
+- Starting the engine no longer aborts with PJLIB's "Calling pjlib from
+  unknown/external thread" when something else in the process has already
+  initialized PJLIB. `pjsua_create()` registers its caller only when it is the
+  one bringing PJLIB up, and a push-driven start runs on a transient SIP queue
+  worker; the stack is now initialized and the thread registered before
+  `pjsua_create()`, and the teardown balances that initialization.
 
 ## [0.7.1] - 2026-09-08
 
