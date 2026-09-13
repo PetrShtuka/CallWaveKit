@@ -1064,12 +1064,31 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     CallWaveEngineConfiguration *engine = self.engineConfiguration;
 
     if (!gPJSUACreated) {
-        pj_status_t status = pjsua_create();
+        // pjsua_create() starts with pj_init(), but pj_init() registers the
+        // calling thread only when it is the one that brings PJLIB up. A host
+        // that already runs another PJSIP-based stack — or that called
+        // pj_init() itself — leaves this thread, a transient sipQueue worker,
+        // unknown to PJLIB, and pjsua_create() aborts on the first per-thread
+        // call it makes. Initializing PJLIB first makes the registration below
+        // legal; pjsua_destroy() undoes only its own pj_init(), so the
+        // teardown balances this one.
+        pj_status_t status = pj_init();
         if (status != PJ_SUCCESS) {
             return status;
         }
-        gPJSUACreated = PJ_TRUE;
         gPJInitialized = PJ_TRUE;
+        if (!ensurePJThreadRegistered("CallWaveCreate")) {
+            pj_shutdown();
+            gPJInitialized = PJ_FALSE;
+            return PJ_EUNKNOWN;
+        }
+        status = pjsua_create();
+        if (status != PJ_SUCCESS) {
+            pj_shutdown();
+            gPJInitialized = PJ_FALSE;
+            return status;
+        }
+        gPJSUACreated = PJ_TRUE;
     }
 
     if (!ensurePJThreadRegistered("CallWaveConfig")) {
@@ -1494,6 +1513,12 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         unregisterTeardownObserver();
         if (gPJSUACreated) {
             pjsua_destroy();
+        }
+        if (gPJInitialized) {
+            // Balances the pj_init() in -startEngineLocked. pjsua_destroy()
+            // releases only the reference pjsua_create() took, and PJLIB stays
+            // up for whoever else in the process initialized it.
+            pj_shutdown();
         }
         gPJSUAStarted = PJ_FALSE;
         gPJSUACreated = PJ_FALSE;
