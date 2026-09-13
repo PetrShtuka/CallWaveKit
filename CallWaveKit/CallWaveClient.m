@@ -3309,6 +3309,16 @@ forCallWithUUID:(NSUUID *)uuid
         // serialized queue turn as start/stop. Otherwise stop() can destroy
         // PJSUA after the check but before registration is refreshed.
         if (![self validateAccountWithError:NULL]) {
+            if (self.configuration == nil) {
+                // Credentials-on-first-push hosts have not called
+                // -loginWithConfiguration: yet: the push is what makes them
+                // fetch the account. There is nothing to register here, and
+                // that login starts the stack on its own, so waking is a no-op
+                // rather than a failed start.
+                CWLogInfo(CallWaveLogCategoryPush,
+                          @"no SIP account yet; waiting for -loginWithConfiguration:");
+                return;
+            }
             NSError *error = nil;
             if (![self startWithError:&error] && error != nil) {
                 CWLogError(CallWaveLogCategoryPush, @"start after VoIP push failed: %@", error);
@@ -3440,7 +3450,12 @@ forCallWithUUID:(NSUUID *)uuid
                 acknowledge(error == nil ? @"CallKit accepted the call" : @"CallKit refused the call");
             });
         }];
-        [self wakeRegistration];
+        if (self.managesCallKit) {
+            // In host-owned mode the report above went through
+            // -prepareIncomingCallWithUUID:caller:, which already woke the
+            // registration; a second nudge would REGISTER twice per push.
+            [self wakeRegistration];
+        }
     });
 }
 
