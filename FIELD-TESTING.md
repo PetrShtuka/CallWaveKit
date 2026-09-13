@@ -9,6 +9,20 @@ done by hand, on a device, against an intercom.
 Run it before tagging a release, and after any change to the answer path, the
 push path, the audio session or the registration lifecycle.
 
+## 0.7.2 run record
+
+Physical-device pass: **not run** at release time. 0.7.2 changes the push and
+registration path, which this file names as the trigger for a new pass, so the
+matrix below is owed for it. What the release specifically wants confirmed:
+
+- scenario 1 and 11, on a build whose credentials arrive with the push — the log
+  must carry `no SIP account yet; waiting for -loginWithConfiguration:` and no
+  `No configuration` error;
+- the PBX log for a host-owned CallKit integration: one `REGISTER` per incoming
+  push, not two;
+- scenario 7, to confirm that ten calls in a row still register and answer after
+  the PJLIB initialization change.
+
 ## 0.7.1 run record
 
 Physical-device pass: **not run**. The release is authorized to deliver the
