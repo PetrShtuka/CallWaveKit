@@ -6,6 +6,8 @@ bump may contain breaking changes, and each one is listed below.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-13
+
 ### Fixed
 
 - A VoIP push that arrives before the host has called
@@ -24,6 +26,10 @@ bump may contain breaking changes, and each one is listed below.
   one bringing PJLIB up, and a push-driven start runs on a transient SIP queue
   worker; the stack is now initialized and the thread registered before
   `pjsua_create()`, and the teardown balances that initialization.
+
+Physical-device verification of 0.7.2 is pending; every fix in it sits on the
+push and registration path, which the simulator suite cannot exercise against a
+real PBX.
 
 ## [0.7.1] - 2026-09-08
 
