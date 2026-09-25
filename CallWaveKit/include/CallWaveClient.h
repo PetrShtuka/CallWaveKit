@@ -104,18 +104,34 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// immediately, so this may safely exceed CallKit's own action timeout.
 @property (nonatomic, assign) NSTimeInterval answerTimeout;
 
-/// Pause between spotting the INVITE and sending `200 OK`. Intercom PBXs are
-/// not always ready to accept the answer the moment they have sent the INVITE,
-/// and answering too early tears the call down.
+/// Pause between the INVITE being there and `200 OK`, for a PBX that is not
+/// ready to accept the answer the moment it has sent the INVITE.
 ///
-/// Defaults to 0.5 seconds, which is the value the previous linphone-based
-/// implementation used. Values are clamped to `[0, 1.0]`: CallKit already shows
-/// the call as connected while this pause runs, so anything past a second reads
-/// to the user as a call that does not work.
+/// Defaults to `0`: `200 OK` leaves as soon as the host has answered and the
+/// INVITE is bound, whichever comes last. Through 0.7.2 the default was 0.5
+/// seconds, inherited from the previous linphone-based implementation; set that
+/// back only for a PBX that tears the call down when answered at once. Values
+/// are clamped to `[0, 1.0]`: CallKit already shows the call as connected while
+/// this pause runs, so anything past a second reads to the user as a call that
+/// does not work.
 ///
-/// The pause is applied once per call, only after the INVITE has been found. It
-/// is not part of `answerTimeout`.
+/// The pause is applied once per call and timed on the client's SIP queue, not
+/// on the main queue. It is not part of `answerTimeout`.
 @property (nonatomic, assign) NSTimeInterval acceptDelay;
+
+/// How long after `200 OK` the client waits for CallKit's
+/// `-provider:didActivateAudioSession:` before activating the audio session
+/// itself. Until the session is active the call's audio is not connected to the
+/// sound device, so this is the longest the user can hear nothing because
+/// CallKit stayed silent — which it most often does on a cold start answered
+/// from the lock screen.
+///
+/// Defaults to 1.5 seconds. Values are clamped to `[0, 5]`; NaN restores the
+/// default. The timer runs off the main queue. When CallKit's activation still
+/// arrives after the manual one, the second activation is harmless: the sound
+/// device stays open, the conference bridge is re-linked and a speaker route
+/// the host chose is applied again.
+@property (nonatomic, assign) NSTimeInterval audioActivationFallbackDelay;
 
 /// How long an unanswered incoming call is allowed to ring before the client
 /// replies `480 Temporarily Unavailable` and reports it as unanswered.
@@ -211,10 +227,13 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 #pragma mark - Direct call control
 
 /// Answers the SIP call directly, without going through `CXCallController`.
-/// If the INVITE has not arrived yet the client polls until `answerTimeout`
-/// elapses — the host is expected to have fulfilled the CallKit action already.
-/// Once the call is found, the answer waits out `acceptDelay`. Pass `nil` for
-/// the current call.
+/// When the INVITE is already bound, `200 OK` goes out from the SIP queue at
+/// once; otherwise it goes out the moment the INVITE is bound, or the call
+/// fails with `CallWaveErrorTimedOut` after `answerTimeout`. Neither path waits
+/// for the main queue — only `completion` and the published state are
+/// delivered there. The host is expected to have fulfilled the CallKit action
+/// already. A call ended while its answer waits completes with
+/// `CallWaveErrorNoActiveCall`. Pass `nil` for the current call.
 - (void)acceptCallWithUUID:(nullable NSUUID *)uuid
                 completion:(nullable CallWaveCompletion)completion
     NS_SWIFT_NAME(acceptCall(uuid:completion:));

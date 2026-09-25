@@ -6,6 +6,22 @@ NS_ASSUME_NONNULL_BEGIN
 @class CallWaveAudioRoute;
 @class CallWaveAudioSessionCoordinator;
 
+/// The default `activationFallbackDelay`.
+FOUNDATION_EXPORT const NSTimeInterval CallWaveDefaultAudioActivationFallbackDelay;
+
+/// What made the audio session active.
+typedef NS_ENUM(NSInteger, CallWaveAudioActivation) {
+    /// `-provider:didActivateAudioSession:`, forwarded by the host or by the
+    /// library's own provider.
+    CallWaveAudioActivationCallKit,
+    /// The fallback timer, because CallKit had not activated the session within
+    /// `activationFallbackDelay` of the answer.
+    CallWaveAudioActivationFallback,
+    /// `-activateAudioSessionWithError:`, an interruption that ended with
+    /// `shouldResume`, or a media-services reset.
+    CallWaveAudioActivationManual,
+};
+
 /// Everything the coordinator needs from its owner that is not AVAudioSession:
 /// the call registry headcount, the PJSIP sound device (which must be driven
 /// from the client's SIP queue) and the public event stream.
@@ -17,8 +33,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Open the PJSIP sound device and re-link the conference bridge. The
 /// coordinator has already marked the session active; the delegate performs
-/// the pjsua work on the SIP queue.
-- (void)audioCoordinatorRequestsSoundDeviceStart:(CallWaveAudioSessionCoordinator *)coordinator;
+/// the pjsua work on the SIP queue. Called on whatever thread activated the
+/// session — the main queue for CallKit, a background queue for the fallback —
+/// and possibly twice for one call, when CallKit's `didActivate` follows the
+/// fallback.
+- (void)audioCoordinator:(CallWaveAudioSessionCoordinator *)coordinator
+    requestsSoundDeviceStartAfter:(CallWaveAudioActivation)activation;
 
 /// Drop the PJSIP sound device after an interruption began or CallKit
 /// deactivated the session.
@@ -59,9 +79,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)activateAudioSessionWithError:(NSError **_Nullable)error;
 - (BOOL)setSpeakerEnabled:(BOOL)enabled error:(NSError **_Nullable)error;
 
+/// How long `-scheduleAudioSessionFallback` waits for CallKit before
+/// activating the session itself. Clamping is the client's job; this stores
+/// what it is given. Thread-safe.
+@property (nonatomic, assign) NSTimeInterval activationFallbackDelay;
+
 /// CallKit does not always deliver `didActivateAudioSession` — most often on
-/// a cold start answered from the lock screen. The client schedules this after
-/// accepting a call; it activates the session manually when CallKit did not.
+/// a cold start answered from the lock screen. The client schedules this once
+/// `200 OK` is out; `activationFallbackDelay` later it activates the session
+/// manually when CallKit did not. The timer runs on a private serial queue,
+/// never on the main queue, so a busy main thread cannot hold the audio back.
 - (void)scheduleAudioSessionFallback;
 
 /// Entry points for the CallKit provider delegate.

@@ -23,6 +23,7 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
         _createdAt = [NSDate date];
         _cancelledBeforeInvite = NO;
         _cancelledAt = nil;
+        _timeline = [[CallWaveAnswerTimeline alloc] init];
     }
     return self;
 }
@@ -39,6 +40,9 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
     os_unfair_lock _lock;
     NSMutableDictionary<NSUUID *, CallWaveCall *> *_callsByUUID;
     NSMutableDictionary<NSNumber *, CallWaveCall *> *_callsByCallId;
+    /// Keyed by UUID rather than hung off the call, because a host may answer a
+    /// UUID it has not reported through `-prepareIncomingCall…` yet.
+    NSMutableDictionary<NSUUID *, NSMutableArray *> *_answerRequestsByUUID;
 }
 
 - (instancetype)init {
@@ -47,6 +51,7 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
         _lock = OS_UNFAIR_LOCK_INIT;
         _callsByUUID = [NSMutableDictionary dictionary];
         _callsByCallId = [NSMutableDictionary dictionary];
+        _answerRequestsByUUID = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -80,8 +85,7 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
     return call;
 }
 
-- (CallWaveCall *)callAwaitingInvite {
-    os_unfair_lock_lock(&_lock);
+- (CallWaveCall *)lockedCallAwaitingInvite {
     CallWaveCall *oldest = nil;
     for (CallWaveCall *call in _callsByUUID.objectEnumerator) {
         if (call.callId != CallWaveSIPCallIdInvalid ||
@@ -93,6 +97,12 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
             oldest = call;
         }
     }
+    return oldest;
+}
+
+- (CallWaveCall *)callAwaitingInvite {
+    os_unfair_lock_lock(&_lock);
+    CallWaveCall *oldest = [self lockedCallAwaitingInvite];
     os_unfair_lock_unlock(&_lock);
     return oldest;
 }
@@ -130,11 +140,7 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
     return call;
 }
 
-- (void)bindCallId:(CallWaveSIPCallId)callId toUUID:(NSUUID *)uuid {
-    if (callId == CallWaveSIPCallIdInvalid || uuid == nil) {
-        return;
-    }
-    os_unfair_lock_lock(&_lock);
+- (void)lockedBindCallId:(CallWaveSIPCallId)callId toUUID:(NSUUID *)uuid {
     // A call id is recycled by PJSUA as soon as the previous call is gone, so
     // an old binding for the same id must not survive.
     CallWaveCall *previous = _callsByCallId[@(callId)];
@@ -151,7 +157,41 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
     }
     call.callId = callId;
     _callsByCallId[@(callId)] = call;
+}
+
+- (NSArray *)lockedTakeAnswerRequestsForUUID:(NSUUID *)uuid {
+    NSArray *requests = uuid != nil ? [_answerRequestsByUUID[uuid] copy] : nil;
+    if (requests != nil) {
+        [_answerRequestsByUUID removeObjectForKey:uuid];
+    }
+    return requests ?: @[];
+}
+
+- (NSArray *)bindCallId:(CallWaveSIPCallId)callId toUUID:(NSUUID *)uuid {
+    if (callId == CallWaveSIPCallIdInvalid || uuid == nil) {
+        return @[];
+    }
+    os_unfair_lock_lock(&_lock);
+    [self lockedBindCallId:callId toUUID:uuid];
+    NSArray *requests = [self lockedTakeAnswerRequestsForUUID:uuid];
     os_unfair_lock_unlock(&_lock);
+    return requests;
+}
+
+- (CallWaveCall *)bindCallIdToCallAwaitingInvite:(CallWaveSIPCallId)callId
+                                  answerRequests:(NSArray **)requests {
+    *requests = @[];
+    if (callId == CallWaveSIPCallIdInvalid) {
+        return nil;
+    }
+    os_unfair_lock_lock(&_lock);
+    CallWaveCall *call = [self lockedCallAwaitingInvite];
+    if (call != nil) {
+        [self lockedBindCallId:callId toUUID:call.uuid];
+        *requests = [self lockedTakeAnswerRequestsForUUID:call.uuid];
+    }
+    os_unfair_lock_unlock(&_lock);
+    return call;
 }
 
 - (void)removeCallWithUUID:(NSUUID *)uuid {
@@ -251,6 +291,63 @@ const CallWaveSIPCallId CallWaveSIPCallIdInvalid = -1;
     [_callsByCallId removeAllObjects];
     os_unfair_lock_unlock(&_lock);
     return calls;
+}
+
+- (CallWaveSIPCallId)addAnswerRequest:(id)request forUUID:(NSUUID *)uuid {
+    if (request == nil || uuid == nil) {
+        return CallWaveSIPCallIdInvalid;
+    }
+    os_unfair_lock_lock(&_lock);
+    CallWaveCall *call = _callsByUUID[uuid];
+    // Messaging nil would read 0, which is a valid PJSUA call id.
+    CallWaveSIPCallId callId = call != nil ? call.callId : CallWaveSIPCallIdInvalid;
+    if (callId == CallWaveSIPCallIdInvalid) {
+        NSMutableArray *waiting = _answerRequestsByUUID[uuid];
+        if (waiting == nil) {
+            waiting = [NSMutableArray array];
+            _answerRequestsByUUID[uuid] = waiting;
+        }
+        [waiting addObject:request];
+    }
+    os_unfair_lock_unlock(&_lock);
+    return callId;
+}
+
+- (BOOL)removeAnswerRequest:(id)request forUUID:(NSUUID *)uuid {
+    if (request == nil || uuid == nil) {
+        return NO;
+    }
+    os_unfair_lock_lock(&_lock);
+    NSMutableArray *waiting = _answerRequestsByUUID[uuid];
+    // Messaging nil would read index 0 and claim a request nobody holds.
+    NSUInteger index = waiting != nil ? [waiting indexOfObjectIdenticalTo:request] : NSNotFound;
+    BOOL removed = index != NSNotFound;
+    if (removed) {
+        [waiting removeObjectAtIndex:index];
+        if (waiting.count == 0) {
+            [_answerRequestsByUUID removeObjectForKey:uuid];
+        }
+    }
+    os_unfair_lock_unlock(&_lock);
+    return removed;
+}
+
+- (NSArray *)takeAnswerRequestsForUUID:(NSUUID *)uuid {
+    os_unfair_lock_lock(&_lock);
+    NSArray *requests = [self lockedTakeAnswerRequestsForUUID:uuid];
+    os_unfair_lock_unlock(&_lock);
+    return requests;
+}
+
+- (NSArray *)takeAllAnswerRequests {
+    os_unfair_lock_lock(&_lock);
+    NSMutableArray *requests = [NSMutableArray array];
+    for (NSArray *waiting in _answerRequestsByUUID.objectEnumerator) {
+        [requests addObjectsFromArray:waiting];
+    }
+    [_answerRequestsByUUID removeAllObjects];
+    os_unfair_lock_unlock(&_lock);
+    return requests;
 }
 
 - (void)performLocked:(NS_NOESCAPE dispatch_block_t)block {

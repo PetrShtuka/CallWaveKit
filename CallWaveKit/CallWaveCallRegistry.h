@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 
+#import "CallWaveAnswerTimeline.h"
 #import "CallWaveTypes.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -36,6 +37,10 @@ FOUNDATION_EXPORT const CallWaveSIPCallId CallWaveSIPCallIdInvalid;
 /// When the cancellation was recorded, for expiring it.
 @property (nonatomic, strong, readonly, nullable) NSDate *cancelledAt;
 
+/// Answer-latency milestones for this call. Created with the call and never
+/// replaced, so it may be read and recorded into from any thread.
+@property (nonatomic, strong, readonly) CallWaveAnswerTimeline *timeline;
+
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithUUID:(NSUUID *)uuid NS_DESIGNATED_INITIALIZER;
 
@@ -64,7 +69,17 @@ FOUNDATION_EXPORT const CallWaveSIPCallId CallWaveSIPCallIdInvalid;
 /// Adds `uuid` if it is unknown and returns the call either way.
 - (CallWaveCall *)registerCallWithUUID:(NSUUID *)uuid;
 /// Binds `callId` to `uuid`, replacing any previous binding for either side.
-- (void)bindCallId:(CallWaveSIPCallId)callId toUUID:(NSUUID *)uuid;
+///
+/// Returns — removed — the answer requests that were waiting for `uuid`'s
+/// INVITE. The caller now owns them and has to answer the call for them.
+- (NSArray *)bindCallId:(CallWaveSIPCallId)callId toUUID:(NSUUID *)uuid;
+/// Binds `callId` to the call `-callAwaitingInvite` would return, in the same
+/// step as finding it, so an INVITE on PJSIP's thread and a push on the main
+/// queue cannot both claim the call. Returns that call, or `nil` when no call is
+/// waiting; `requests` receives its answer requests exactly as for
+/// `-bindCallId:toUUID:`.
+- (nullable CallWaveCall *)bindCallIdToCallAwaitingInvite:(CallWaveSIPCallId)callId
+                                           answerRequests:(NSArray *_Nullable *_Nonnull)requests;
 - (void)removeCallWithUUID:(nullable NSUUID *)uuid;
 - (void)removeCallWithCallId:(CallWaveSIPCallId)callId;
 - (NSArray<CallWaveCall *> *)removeAllCalls;
@@ -86,6 +101,27 @@ FOUNDATION_EXPORT const CallWaveSIPCallId CallWaveSIPCallIdInvalid;
 /// while one exists this returns `nil`, so the INVITE is matched to it rather
 /// than consumed by a cancellation that may belong to a different call.
 - (nullable CallWaveCall *)takeCallCancelledBeforeInviteWithin:(NSTimeInterval)window;
+
+/// Remembers `request` — an answer the host asked for — until the INVITE for
+/// `uuid` is bound, so the binding can send `200 OK` without anyone polling.
+///
+/// Returns the call id instead, and remembers nothing, when the INVITE is
+/// already bound. The check and the record are one step under the lock, which
+/// is what keeps an INVITE bound on PJSIP's thread in the meantime from being
+/// missed by both sides. `uuid` does not have to be registered yet.
+- (CallWaveSIPCallId)addAnswerRequest:(id)request forUUID:(NSUUID *)uuid;
+
+/// Forgets `request`. YES when it was still waiting, which makes the caller
+/// the one that completes it.
+- (BOOL)removeAnswerRequest:(id)request forUUID:(NSUUID *)uuid;
+
+/// Removes and returns the requests waiting for `uuid`'s INVITE.
+- (NSArray *)takeAnswerRequestsForUUID:(nullable NSUUID *)uuid;
+
+/// Removes and returns every request still waiting for an INVITE. Removing
+/// calls leaves their requests in place; this is how an engine stop or a
+/// provider reset collects them.
+- (NSArray *)takeAllAnswerRequests;
 
 /// Runs `block` with the lock held, for a read-modify-write that has to be
 /// atomic. Do not call back into the registry from inside it.

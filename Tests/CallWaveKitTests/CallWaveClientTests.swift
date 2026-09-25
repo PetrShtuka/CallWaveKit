@@ -79,10 +79,14 @@ final class CallWaveClientPropertyTests: XCTestCase {
         )
     }
 
+    func testAcceptDelayDefaultsToAnsweringAtOnce() {
+        // A behaviour change from 0.7.2, which paused 0.5 s before every
+        // `200 OK` while CallKit already showed the call as connected.
+        XCTAssertEqual(makeClient().acceptDelay, 0)
+    }
+
     func testAcceptDelayIsClampedToTheDocumentedRange() {
         let client = makeClient()
-
-        XCTAssertEqual(client.acceptDelay, 0.5, accuracy: 0.0001)
 
         client.acceptDelay = -1
         XCTAssertEqual(client.acceptDelay, 0, accuracy: 0.0001)
@@ -95,6 +99,28 @@ final class CallWaveClientPropertyTests: XCTestCase {
 
         client.acceptDelay = 0.25
         XCTAssertEqual(client.acceptDelay, 0.25, accuracy: 0.0001)
+    }
+
+    func testAudioActivationFallbackDelayDefaultsAndClamps() {
+        let client = makeClient()
+
+        XCTAssertEqual(client.audioActivationFallbackDelay, 1.5, accuracy: 0.0001)
+
+        client.audioActivationFallbackDelay = 0.4
+        XCTAssertEqual(client.audioActivationFallbackDelay, 0.4, accuracy: 0.0001)
+
+        client.audioActivationFallbackDelay = 0
+        XCTAssertEqual(client.audioActivationFallbackDelay, 0, accuracy: 0.0001)
+
+        client.audioActivationFallbackDelay = -1
+        XCTAssertEqual(client.audioActivationFallbackDelay, 0, accuracy: 0.0001)
+
+        client.audioActivationFallbackDelay = 60
+        XCTAssertEqual(client.audioActivationFallbackDelay, 5, accuracy: 0.0001)
+
+        // NaN is a programming error, not a request for an instant fallback.
+        client.audioActivationFallbackDelay = .nan
+        XCTAssertEqual(client.audioActivationFallbackDelay, 1.5, accuracy: 0.0001)
     }
 
     func testIncomingCallTimeoutTreatsNonPositiveValuesAsDisabled() {

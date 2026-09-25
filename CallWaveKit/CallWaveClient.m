@@ -1,5 +1,6 @@
 #import "CallWaveClient.h"
 
+#import "CallWaveAnswerTimeline.h"
 #import "CallWaveCallRegistry.h"
 #import "CallWaveCallQualityInternal.h"
 #import "CallWaveCallStateMachine.h"
@@ -32,9 +33,14 @@
 #endif
 
 static NSString *const CallWaveFallbackCallerName = @"Unknown";
-static const NSTimeInterval CallWaveAnswerPollInterval = 0.25;
-static const NSTimeInterval CallWaveDefaultAcceptDelay = 0.5;
+/// No pause by default: the INVITE is answered the moment it is bound. The
+/// 0.5 s inherited from the linphone-based implementation kept CallKit showing
+/// a connected call with no audio for the whole pause.
+static const NSTimeInterval CallWaveDefaultAcceptDelay = 0;
 static const NSTimeInterval CallWaveMaximumAcceptDelay = 1.0;
+/// Past this the fallback stops being a fallback: the user would be looking at
+/// a connected call with no audio for more than five seconds.
+static const NSTimeInterval CallWaveMaximumAudioActivationFallbackDelay = 5.0;
 static const NSTimeInterval CallWaveDefaultAnswerTimeout = 10.0;
 static const NSTimeInterval CallWaveDefaultIncomingCallTimeout = 60.0;
 static const NSTimeInterval CallWaveDefaultPushCompletionTimeout = 4.0;
@@ -579,6 +585,48 @@ static void dispatchMain(dispatch_block_t block) {
     }
 }
 
+/// `dispatchMain` for work a PJSIP callback or the SIP queue hands to the main
+/// queue, saying how long the main queue took to pick it up. On a cold start
+/// the host's main thread is busy with launch, and this is the delay every
+/// state change pays on top of the network.
+static void dispatchMainMeasured(NSString *category, NSString *what, uint64_t since,
+                                 dispatch_block_t block) {
+    if (NSThread.isMainThread) {
+        block();
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CWLogInfo(category, @"main queue picked up %@ after %.0f ms", what,
+                  CallWaveMillisecondsBetween(since, CallWaveMonotonicNanoseconds()));
+        block();
+    });
+}
+
+/// One `-acceptCallWithUUID:…` that could not be answered on the spot because
+/// the INVITE was not there yet. It sits in the registry until exactly one of
+/// three things takes it out: the binding of the INVITE, which answers it; the
+/// `answerTimeout`, which fails it; or the end of the call, which fails it.
+/// Whoever removes it completes it, so the completion runs exactly once.
+@interface CallWaveAnswerRequest : NSObject
+@property (nonatomic, strong, readonly) NSUUID *uuid;
+@property (nonatomic, copy, readonly, nullable) CallWaveCompletion completion;
+@property (nonatomic, assign, readonly) uint64_t requestedAt;
+@end
+
+@implementation CallWaveAnswerRequest
+- (instancetype)initWithUUID:(NSUUID *)uuid
+                 requestedAt:(uint64_t)requestedAt
+                  completion:(CallWaveCompletion)completion {
+    self = [super init];
+    if (self) {
+        _uuid = uuid;
+        _requestedAt = requestedAt;
+        _completion = [completion copy];
+    }
+    return self;
+}
+@end
+
 @interface CallWaveClient () <CXProviderDelegate, PKPushRegistryDelegate,
                               CallWaveAudioSessionCoordinatorDelegate,
                               CallWaveCallStateMachineDelegate>
@@ -618,7 +666,9 @@ static void dispatchMain(dispatch_block_t block) {
 - (NSString *)displayNameForCaller:(nullable NSString *)caller;
 - (BOOL)canAcceptAnotherIncomingCall;
 - (nullable CallWaveCall *)takeCallCancelledBeforeInvite;
-- (void)handleIncomingSIPCall:(pjsua_call_id)callId caller:(NSString *)caller;
+- (void)handleIncomingSIPCall:(pjsua_call_id)callId
+                       caller:(NSString *)caller
+                   receivedAt:(uint64_t)receivedAt;
 - (void)handleSIPCallConfirmed:(pjsua_call_id)callId;
 - (void)handleSIPCallDisconnected:(pjsua_call_id)callId
                         sipStatus:(int)sipStatus
@@ -653,6 +703,9 @@ static void dispatchMain(dispatch_block_t block) {
     CallWavePushPayloadParser _pushPayloadParser;
     NSString *_networkPathSummary;
     NSInteger _lastRegistrationSIPStatusCode;
+    /// When the login waiting for its first registration outcome started, or
+    /// 0. Written by the login, consumed by PJSIP's registration callback.
+    _Atomic uint64_t _loginStartedAt;
 }
 
 #pragma mark - Published state
@@ -852,6 +905,22 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     _acceptDelay = acceptDelay;
 }
 
+- (NSTimeInterval)audioActivationFallbackDelay {
+    return self.audioCoordinator.activationFallbackDelay;
+}
+
+- (void)setAudioActivationFallbackDelay:(NSTimeInterval)audioActivationFallbackDelay {
+    NSTimeInterval delay = audioActivationFallbackDelay;
+    if (isnan(delay)) {
+        delay = CallWaveDefaultAudioActivationFallbackDelay;
+    } else if (delay < 0) {
+        delay = 0;
+    } else if (delay > CallWaveMaximumAudioActivationFallbackDelay) {
+        delay = CallWaveMaximumAudioActivationFallbackDelay;
+    }
+    self.audioCoordinator.activationFallbackDelay = delay;
+}
+
 - (void)setIncomingCallTimeout:(NSTimeInterval)incomingCallTimeout {
     _incomingCallTimeout = (incomingCallTimeout > 0 && !isnan(incomingCallTimeout))
         ? incomingCallTimeout
@@ -939,9 +1008,16 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 
     CallWaveLog.level = self.engineConfiguration.logLevel;
 
+    // A host that starts the engine on the first push does it synchronously on
+    // the main queue, where every millisecond of this is a millisecond of the
+    // answer path the user waits through; the line below says how many.
+    uint64_t startedAt = CallWaveMonotonicNanoseconds();
+    BOOL onMainThread = NSThread.isMainThread;
+    __block uint64_t queuePickedUpAt = 0;
     __block pj_status_t status = PJ_SUCCESS;
     __block BOOL ownershipLost = NO;
     [self performSIPSync:^{
+        queuePickedUpAt = CallWaveMonotonicNanoseconds();
         @synchronized (CallWaveClient.class) {
             ownershipLost = gRuntimeOwnerToken != _runtimeOwnerToken;
         }
@@ -976,6 +1052,13 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         }
         return NO;
     }
+    uint64_t finishedAt = CallWaveMonotonicNanoseconds();
+    CWLogInfo(CallWaveLogCategorySIP,
+              @"engine %@ in %.0f ms on the %@ (%.0f ms waiting for the SIP queue)",
+              status == PJ_SUCCESS ? @"started" : @"failed to start",
+              CallWaveMillisecondsBetween(startedAt, finishedAt),
+              onMainThread ? @"main thread" : @"calling thread",
+              CallWaveMillisecondsBetween(startedAt, queuePickedUpAt));
     if (status != PJ_SUCCESS) {
         if (error != NULL) {
             *error = CallWaveMakeSIPError(status, @"PJSIP start");
@@ -1028,7 +1111,12 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     CallWaveConfiguration *copy = [configuration copy];
     __block NSError *failure = nil;
     __block BOOL recentsChanged = NO;
+    uint64_t startedAt = CallWaveMonotonicNanoseconds();
+    atomic_store(&_loginStartedAt, startedAt);
     [self performSIPSync:^{
+        // Replacing an account drains the previous call's teardown on this
+        // queue, and anything queued behind it — an answer included — waits.
+        uint64_t pickedUpAt = CallWaveMonotonicNanoseconds();
         BOOL ownsRuntime;
         @synchronized (CallWaveClient.class) {
             ownsRuntime = gRuntimeOwnerToken == _runtimeOwnerToken;
@@ -1048,8 +1136,14 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
         }
         recentsChanged = self.configuration.includesCallsInRecents != copy.includesCallsInRecents;
         self.configuration = copy;
+        CWLogInfo(CallWaveLogCategorySIP,
+                  @"account applied in %.0f ms (%.0f ms waiting for the SIP queue)",
+                  CallWaveMillisecondsBetween(pickedUpAt, CallWaveMonotonicNanoseconds()),
+                  CallWaveMillisecondsBetween(startedAt, pickedUpAt));
     }];
     if (failure != nil) {
+        // No REGISTER went out, so there is no outcome to time.
+        atomic_store(&_loginStartedAt, 0);
         if (error != NULL) *error = failure;
         return NO;
     }
@@ -1557,6 +1651,8 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 
         didStop = YES;
         calls = [self.registry removeAllCalls];
+        [self failAnswerRequests:[self.registry takeAllAnswerRequests]
+                          reason:@"lost its engine"];
         [self stopPathMonitorLocked];
         if (ownsRuntime) {
             ensurePJThreadRegistered("CallWaveStop");
@@ -1754,8 +1850,28 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
 }
 
 /// Opens the PJSIP sound device and re-links the conference bridge. Runs on
-/// the SIP queue; safe to call more than once.
-- (void)audioCoordinatorRequestsSoundDeviceStart:(CallWaveAudioSessionCoordinator *)coordinator {
+/// the SIP queue; safe to call more than once, which is what happens when
+/// CallKit's `didActivate` follows the fallback: PJSUA keeps a sound device
+/// that is already open on the same devices, and re-linking a linked port only
+/// restates the link.
+- (void)audioCoordinator:(CallWaveAudioSessionCoordinator *)coordinator
+    requestsSoundDeviceStartAfter:(CallWaveAudioActivation)activation {
+    uint64_t activatedAt = CallWaveMonotonicNanoseconds();
+    NSString *source = activation == CallWaveAudioActivationCallKit ? @"CallKit didActivate"
+        : activation == CallWaveAudioActivationFallback ? @"fallback"
+        : @"manual activation";
+    for (CallWaveCall *call in self.registry.allCalls) {
+        // Only calls being answered: a later reactivation mid-call is not part
+        // of anyone's answer latency, and a cancelled call has none.
+        if ([call.timeline timeOfMilestone:CallWaveAnswerMilestoneAnswerRequested] == 0 ||
+            call.state == CallWaveCallStateEnded) {
+            continue;
+        }
+        [self recordMilestone:CallWaveAnswerMilestoneSessionActivated
+                      forCall:call
+                           at:activatedAt
+                       detail:source];
+    }
     [self performSIPAsync:^{
         if (!gPJSUAStarted) {
             return;
@@ -1910,6 +2026,7 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     }
     [self.callStateMachine clearCallWithUUID:uuid];
     [self.callQualityWarningLatches removeObjectForKey:uuid];
+    [self failAnswerRequestsForUUID:uuid reason:@"was cleared"];
 }
 
 /// Moves `currentCallUUID` off `uuid` without touching the registry, for a call
@@ -2134,112 +2251,259 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
     [self acceptCallWithUUID:uuid timeout:self.answerTimeout completion:completion];
 }
 
+/// Answers without waiting for any queue: the INVITE is either bound already,
+/// and `200 OK` goes out from the SIP queue now, or it is not, and the request
+/// is left where the binding of the INVITE will find it. Nothing on this path
+/// goes through the main queue, which on a cold start is the busiest queue in
+/// the process.
 - (void)acceptCallWithUUID:(NSUUID *)uuid
                    timeout:(NSTimeInterval)timeout
                 completion:(CallWaveCompletion)completion {
-    NSDate *startedAt = [NSDate date];
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX(timeout, 0)];
+    uint64_t requestedAt = CallWaveMonotonicNanoseconds();
+    CallWaveCall *resolved = [self resolveCallForUUID:uuid];
+    NSUUID *target = resolved.uuid ?: uuid;
+    if (target == nil) {
+        [self complete:completion
+                 error:CallWaveMakeError(CallWaveErrorNoActiveCall,
+                                         @"There is no call to answer.")];
+        return;
+    }
+
+    CallWaveAnswerRequest *request =
+        [[CallWaveAnswerRequest alloc] initWithUUID:target
+                                        requestedAt:requestedAt
+                                         completion:completion];
+    pjsua_call_id callId = [self.registry addAnswerRequest:request forUUID:target];
+    CallWaveCall *call = [self.registry callForUUID:target];
+    [self noteAnswerRequest:request forCall:call];
+
+    if (callId != CallWaveSIPCallIdInvalid) {
+        [self answerCallId:callId uuid:target requests:@[request]];
+    } else if (call.isCancelledBeforeInvite &&
+               [self.registry removeAnswerRequest:request forUUID:target]) {
+        // Ended before this answer arrived. A call cancelled after the request
+        // went in is failed by the cancellation instead, which takes it.
+        [self failAnswerRequests:@[request] reason:@"was already ended"];
+    } else {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"call %@ answered before its INVITE arrived; 200 OK goes out as soon as "
+                  @"the INVITE is bound (giving up after %.0f ms)",
+                  target.UUIDString, MAX(timeout, 0) * 1000.0);
+        [self expireAnswerRequest:request after:timeout];
+    }
+
+    // The category is normally in place since the call was reported; this
+    // keeps it so for the activation CallKit starts once the action is
+    // fulfilled. It is not what the answer waits for, so it runs after it.
     dispatchMain(^{
-        CallWaveCall *call = [self resolveCallForUUID:uuid];
-        NSUUID *target = call.uuid ?: uuid;
-        if (target == nil) {
-            [self complete:completion
-                     error:CallWaveMakeError(CallWaveErrorNoActiveCall,
-                                             @"There is no call to answer.")];
-            return;
-        }
-        // The audio session category must be in place before the answer so the
-        // media path is ready when CallKit activates the session.
         [self configureAudioSessionWithError:NULL];
-        [self attemptAcceptForUUID:target
-                          deadline:deadline
-                         startedAt:startedAt
-                        completion:completion];
     });
 }
 
-/// Runs on the main queue. The INVITE frequently arrives after CallKit has
-/// answered, so the call is polled instead of blocking a CallKit action.
-- (void)attemptAcceptForUUID:(NSUUID *)uuid
-                    deadline:(NSDate *)deadline
-                   startedAt:(NSDate *)startedAt
-                  completion:(CallWaveCompletion)completion {
+/// Logs the answer against what already happened to the call. Any thread.
+- (void)noteAnswerRequest:(CallWaveAnswerRequest *)request forCall:(nullable CallWaveCall *)call {
+    if (call == nil) {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"answer timeline %@: acceptCall for a call not reported yet",
+                  request.uuid.UUIDString);
+        return;
+    }
+    if (![call.timeline recordMilestone:CallWaveAnswerMilestoneAnswerRequested
+                                     at:request.requestedAt]) {
+        return;
+    }
+    CallWaveAnswerTimeline *timeline = call.timeline;
+    if ([timeline timeOfMilestone:CallWaveAnswerMilestoneInviteBound] == 0) {
+        CWLogInfo(CallWaveLogCategoryCall,
+                  @"answer timeline %@: acceptCall, INVITE not received yet",
+                  call.uuid.UUIDString);
+        return;
+    }
+    CWLogInfo(CallWaveLogCategoryCall,
+              @"answer timeline %@: acceptCall, INVITE received %@, bound %@",
+              call.uuid.UUIDString,
+              [timeline offsetOfMilestone:CallWaveAnswerMilestoneInviteReceived],
+              [timeline offsetOfMilestone:CallWaveAnswerMilestoneInviteBound]);
+}
+
+/// Records `milestone` for `call` and logs it with its offset from
+/// `-acceptCall`, once per call; the last one also logs the whole timeline.
+/// Any thread.
+- (void)recordMilestone:(CallWaveAnswerMilestone)milestone
+                forCall:(nullable CallWaveCall *)call
+                     at:(uint64_t)at
+                 detail:(nullable NSString *)detail {
+    if (call == nil || ![call.timeline recordMilestone:milestone at:at]) {
+        return;
+    }
+    CallWaveAnswerTimeline *timeline = call.timeline;
+    CWLogInfo(CallWaveLogCategoryCall, @"answer timeline %@: %@ %@%@",
+              call.uuid.UUIDString,
+              [CallWaveAnswerTimeline nameOfMilestone:milestone],
+              [timeline offsetOfMilestone:milestone],
+              detail.length > 0 ? [NSString stringWithFormat:@" (%@)", detail] : @"");
+    if (milestone == CallWaveAnswerMilestoneAudioConnected) {
+        CWLogInfo(CallWaveLogCategoryCall, @"answer timeline %@ summary: %@",
+                  call.uuid.UUIDString, timeline.summary);
+    }
+}
+
+/// Records the INVITE against the call it was bound to. `requests` are the
+/// answers the binding took; the earliest one is the host's `-acceptCall`, in
+/// case the host answered before the call was reported. Any thread.
+- (void)noteInviteBoundToCall:(CallWaveCall *)call
+                   receivedAt:(uint64_t)receivedAt
+                       callId:(pjsua_call_id)callId
+                     requests:(NSArray<CallWaveAnswerRequest *> *)requests {
+    uint64_t boundAt = CallWaveMonotonicNanoseconds();
+    uint64_t requestedAt = 0;
+    for (CallWaveAnswerRequest *request in requests) {
+        if (requestedAt == 0 || request.requestedAt < requestedAt) {
+            requestedAt = request.requestedAt;
+        }
+    }
+    [call.timeline recordMilestone:CallWaveAnswerMilestoneAnswerRequested at:requestedAt];
+    [call.timeline recordMilestone:CallWaveAnswerMilestoneInviteReceived at:receivedAt];
+    if (![call.timeline recordMilestone:CallWaveAnswerMilestoneInviteBound at:boundAt]) {
+        return;
+    }
+    CWLogInfo(CallWaveLogCategoryCall,
+              @"answer timeline %@: INVITE for call %d received %@, bound %@ (%.1f ms later)",
+              call.uuid.UUIDString, callId,
+              [call.timeline offsetOfMilestone:CallWaveAnswerMilestoneInviteReceived],
+              [call.timeline offsetOfMilestone:CallWaveAnswerMilestoneInviteBound],
+              CallWaveMillisecondsBetween(receivedAt, boundAt));
+}
+
+/// Binds `callId` to `uuid` and answers it straight away when the host already
+/// asked for that. Any thread.
+- (void)bindCallId:(pjsua_call_id)callId
+            toUUID:(NSUUID *)uuid
+        receivedAt:(uint64_t)receivedAt {
+    NSArray<CallWaveAnswerRequest *> *requests = [self.registry bindCallId:callId toUUID:uuid];
     CallWaveCall *call = [self.registry callForUUID:uuid];
-    pjsua_call_id callId = call != nil ? call.callId : CallWaveSIPCallIdInvalid;
+    if (call != nil) {
+        [self noteInviteBoundToCall:call receivedAt:receivedAt callId:callId requests:requests];
+    }
+    [self answerCallId:callId uuid:uuid requests:requests];
+}
 
-    NSTimeInterval waitedMilliseconds = -startedAt.timeIntervalSinceNow * 1000.0;
-
-    if (callId == CallWaveSIPCallIdInvalid) {
-        if (deadline.timeIntervalSinceNow <= 0) {
-            CWLogError(CallWaveLogCategoryCall, @"no INVITE for call %@ after %.0f ms, giving up",
-                       uuid.UUIDString, waitedMilliseconds);
-            [self complete:completion
-                     error:CallWaveMakeError(CallWaveErrorTimedOut,
-                                             @"The SIP INVITE did not arrive in time.")];
+/// Fails an answer that has been waiting too long for its INVITE. The timer
+/// runs off the main queue; a request someone else already took is left alone.
+- (void)expireAnswerRequest:(CallWaveAnswerRequest *)request after:(NSTimeInterval)timeout {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(timeout, 0) * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        if (![self.registry removeAnswerRequest:request forUUID:request.uuid]) {
             return;
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(CallWaveAnswerPollInterval * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self attemptAcceptForUUID:uuid
-                              deadline:deadline
-                             startedAt:startedAt
-                            completion:completion];
-        });
+        CWLogError(CallWaveLogCategoryCall, @"no INVITE for call %@ after %.0f ms, giving up",
+                   request.uuid.UUIDString,
+                   CallWaveMillisecondsBetween(request.requestedAt, CallWaveMonotonicNanoseconds()));
+        [self complete:request.completion
+                 error:CallWaveMakeError(CallWaveErrorTimedOut,
+                                         @"The SIP INVITE did not arrive in time.")];
+    });
+}
+
+/// Completes answers that can no longer happen because the call ended first.
+- (void)failAnswerRequests:(NSArray<CallWaveAnswerRequest *> *)requests
+                    reason:(NSString *)reason {
+    for (CallWaveAnswerRequest *request in requests) {
+        CWLogWarning(CallWaveLogCategoryCall, @"call %@ %@ before it could be answered",
+                     request.uuid.UUIDString, reason);
+        [self complete:request.completion
+                 error:CallWaveMakeError(CallWaveErrorNoActiveCall,
+                                         @"The call ended before it could be answered.")];
+    }
+}
+
+/// Answers still waiting for `uuid`'s INVITE are failed: the call is gone.
+- (void)failAnswerRequestsForUUID:(nullable NSUUID *)uuid reason:(NSString *)reason {
+    if (uuid == nil) {
         return;
     }
+    [self failAnswerRequests:[self.registry takeAnswerRequestsForUUID:uuid] reason:reason];
+}
 
+/// Sends `200 OK` for `callId` from the SIP queue and completes `requests`.
+/// Any thread. With `acceptDelay` set, the pause is timed on the SIP queue,
+/// which is where the answer has to run anyway.
+- (void)answerCallId:(pjsua_call_id)callId
+                uuid:(NSUUID *)uuid
+            requests:(NSArray<CallWaveAnswerRequest *> *)requests {
+    if (requests.count == 0) {
+        return;
+    }
     NSTimeInterval settleDelay = self.acceptDelay;
-    CWLogInfo(CallWaveLogCategoryCall,
-              @"INVITE for call %@ observed after %.0f ms, settle delay %.0f ms",
-              uuid.UUIDString, waitedMilliseconds, settleDelay * 1000.0);
-
+    dispatch_block_t answer = ^{
+        [self answerCallIdLocked:callId uuid:uuid requests:requests settleDelay:settleDelay];
+    };
     if (settleDelay <= 0) {
-        [self answerCall:callId uuid:uuid settleDelay:0 completion:completion];
+        [self performSIPAsync:answer];
         return;
     }
-
     // The settle delay sits outside the INVITE deadline on purpose: an expired
     // deadline stops the wait for the INVITE, it does not cancel a pause that
     // has already begun.
+    CWLogInfo(CallWaveLogCategoryCall, @"call %@ waits out a %.0f ms settle delay before 200 OK",
+              uuid.UUIDString, settleDelay * 1000.0);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(settleDelay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [self answerCall:callId uuid:uuid settleDelay:settleDelay completion:completion];
-    });
+                   self.sipQueue, answer);
 }
 
-/// Runs on the main queue once the settle delay, if any, has elapsed.
-- (void)answerCall:(pjsua_call_id)callId
-              uuid:(NSUUID *)uuid
-       settleDelay:(NSTimeInterval)settleDelay
-        completion:(CallWaveCompletion)completion {
-    [self performSIPAsync:^{
-        // Half a second is long enough for the intercom to cancel the call.
-        if (![self isCallAnswerable:callId]) {
-            CWLogWarning(CallWaveLogCategoryCall, @"call %@ ended during the %.0f ms settle delay",
-                         uuid.UUIDString, settleDelay * 1000.0);
-            [self complete:completion
-                     error:CallWaveMakeError(CallWaveErrorNoActiveCall,
-                                             @"The call ended before it could be answered.")];
-            return;
-        }
+/// Must run on `sipQueue`.
+- (void)answerCallIdLocked:(pjsua_call_id)callId
+                      uuid:(NSUUID *)uuid
+                  requests:(NSArray<CallWaveAnswerRequest *> *)requests
+               settleDelay:(NSTimeInterval)settleDelay {
+    // Half a second is long enough for the intercom to cancel the call, and a
+    // host that ended it in the meantime has already sent its final response.
+    if (![self isCallAnswerable:callId]) {
+        [self failAnswerRequests:requests
+                          reason:settleDelay > 0
+                                     ? [NSString stringWithFormat:@"ended during the %.0f ms settle delay",
+                                                                  settleDelay * 1000.0]
+                                     : @"ended"];
+        return;
+    }
 
-        CWLogInfo(CallWaveLogCategoryCall, @"answering call %@ after a %.0f ms settle delay",
-                  uuid.UUIDString, settleDelay * 1000.0);
-        BOOL answered = [self answerSIPCall:callId];
-        dispatchMain(^{
-            if (!answered) {
-                [self complete:completion
+    BOOL answered = [self answerSIPCall:callId];
+    uint64_t answeredAt = CallWaveMonotonicNanoseconds();
+    if (answered) {
+        [self recordMilestone:CallWaveAnswerMilestoneAnswerSent
+                      forCall:[self.registry callForUUID:uuid]
+                           at:answeredAt
+                       detail:settleDelay > 0
+                                  ? [NSString stringWithFormat:@"after a %.0f ms settle delay",
+                                                               settleDelay * 1000.0]
+                                  : nil];
+        // Timed from the actual answer, and not on the main queue: CallKit's
+        // own activation already arrives there, and the fallback exists for
+        // the launches where it does not.
+        [self scheduleAudioSessionFallback];
+    }
+    dispatchMainMeasured(CallWaveLogCategoryCall,
+                         [NSString stringWithFormat:@"the answer of call %@", uuid.UUIDString],
+                         answeredAt, ^{
+        if (!answered) {
+            for (CallWaveAnswerRequest *request in requests) {
+                [self complete:request.completion
                          error:CallWaveMakeError(CallWaveErrorCallActionFailed,
                                                  @"The SIP call could not be answered.")];
-                return;
             }
+            return;
+        }
+        // A second -acceptCall, or an ACK that got here first, must not move
+        // an established call back to `connecting`; nor may an answer that
+        // raced a teardown bring an ended call back.
+        CallWaveCall *call = [self.registry callForUUID:uuid];
+        if (call != nil && call.state == CallWaveCallStateIncoming) {
             [self publishCallState:CallWaveCallStateConnecting forUUID:uuid];
-            // Timed from the actual answer, not from the start of the wait.
-            [self scheduleAudioSessionFallback];
-            [self complete:completion error:nil];
-        });
-    }];
+        }
+        for (CallWaveAnswerRequest *request in requests) {
+            [self complete:request.completion error:nil];
+        }
+    });
 }
 
 - (void)endCallWithUUID:(NSUUID *)uuid completion:(CallWaveCompletion)completion {
@@ -2266,11 +2530,20 @@ CallWaveLockedProperty(NSInteger, lastRegistrationSIPStatusCode, setLastRegistra
                 CWLogInfo(CallWaveLogCategoryCall,
                           @"call %@ %@ before its INVITE arrived; the INVITE will be refused",
                           target.UUIDString, declining ? @"declined" : @"ended");
+                [self failAnswerRequestsForUUID:target
+                                         reason:declining ? @"was declined" : @"was ended"];
                 [self publishCallState:CallWaveCallStateEnded forUUID:target];
                 [self detachCurrentCallIfItIs:target];
                 [self complete:completion error:nil];
                 return;
             }
+            // The mark refuses a call with a SIP id, and PJSIP's thread binds
+            // INVITEs without waiting for this queue: the INVITE may have
+            // landed since the read above. Then it is a SIP call to end.
+            CallWaveCall *bound = [self.registry callForUUID:target];
+            callId = bound != nil ? bound.callId : CallWaveSIPCallIdInvalid;
+        }
+        if (callId == CallWaveSIPCallIdInvalid) {
             [self clearCallWithUUID:target];
             [self complete:completion
                      error:CallWaveMakeError(CallWaveErrorNoActiveCall,
@@ -2732,7 +3005,7 @@ forCallWithUUID:(NSUUID *)uuid
 
 /// Must run on `sipQueue` or a PJSIP callback thread.
 - (void)connectMediaForCall:(CallWaveCall *)call {
-    if (!self.audioSessionActive || call.callId == CallWaveSIPCallIdInvalid) {
+    if (call.callId == CallWaveSIPCallIdInvalid) {
         return;
     }
     pjsua_call_info info;
@@ -2741,14 +3014,29 @@ forCallWithUUID:(NSUUID *)uuid
         info.conf_slot == PJSUA_INVALID_ID) {
         return;
     }
+    BOOL sessionActive = self.audioSessionActive;
+    [self recordMilestone:CallWaveAnswerMilestoneMediaActive
+                  forCall:call
+                       at:CallWaveMonotonicNanoseconds()
+                   detail:sessionActive ? nil
+                                        : @"waiting for the audio session: CallKit or the fallback"];
+    if (!sessionActive) {
+        return;
+    }
 
     // Remote -> playback is always connected. Capture -> remote is omitted
     // while muted, which produces a real RTP microphone mute.
-    pjsua_conf_connect(info.conf_slot, 0);
+    pj_status_t status = pjsua_conf_connect(info.conf_slot, 0);
     if (call.microphoneMuted) {
         pjsua_conf_disconnect(0, info.conf_slot);
     } else {
         pjsua_conf_connect(0, info.conf_slot);
+    }
+    if (status == PJ_SUCCESS) {
+        [self recordMilestone:CallWaveAnswerMilestoneAudioConnected
+                      forCall:call
+                           at:CallWaveMonotonicNanoseconds()
+                       detail:nil];
     }
 }
 
@@ -2854,11 +3142,13 @@ forCallWithUUID:(NSUUID *)uuid
         if (call.isCancelledBeforeInvite) {
             return;
         }
-        if (call.reportedToCallKit && call.state == CallWaveCallStateIncoming) {
+        if (call.reportedToCallKit && call.state != CallWaveCallStateEnded) {
             // A duplicate push for a call that is already on the CallKit
-            // screen: reporting it again would re-publish `incoming`, restart
-            // the ring timeout and, in managed mode, risk a second CallKit
-            // call under the same UUID.
+            // screen — ringing, or already answered: reporting it again would
+            // re-publish `incoming` over `connecting`/`active` and arm a ring
+            // timeout that later ends the established call with a BYE. With
+            // the answer no longer waiting for a poll, a retried push landing
+            // after the answer is the common case, not the rare one.
             CWLogInfo(CallWaveLogCategoryPush,
                       @"duplicate push for call %@; already reported", uuid.UUIDString);
             return;
@@ -2872,8 +3162,13 @@ forCallWithUUID:(NSUUID *)uuid
             // under a UUID CallKit knows nothing about. Adopt its call id.
             CallWaveCall *orphan = [self orphanedSIPCallExcludingUUID:uuid];
             if (orphan != nil) {
-                [self.registry bindCallId:orphan.callId toUUID:uuid];
+                pjsua_call_id orphanId = orphan.callId;
+                uint64_t receivedAt =
+                    [orphan.timeline timeOfMilestone:CallWaveAnswerMilestoneInviteReceived];
                 [self.registry removeCallWithUUID:orphan.uuid];
+                [self bindCallId:orphanId
+                          toUUID:uuid
+                      receivedAt:receivedAt != 0 ? receivedAt : CallWaveMonotonicNanoseconds()];
             }
         }
         [self.callStateMachine adoptCurrentCall:call];
@@ -2929,7 +3224,7 @@ forCallWithUUID:(NSUUID *)uuid
         call.caller = resolved;
         call.displayName = [self displayNameForCaller:resolved];
         if (callId != CallWaveSIPCallIdInvalid) {
-            [self.registry bindCallId:callId toUUID:uuid];
+            [self bindCallId:callId toUUID:uuid receivedAt:CallWaveMonotonicNanoseconds()];
         }
         [self.callStateMachine adoptCurrentCall:call];
 
@@ -2958,8 +3253,9 @@ forCallWithUUID:(NSUUID *)uuid
                                           completion:^(NSError *error) {
             if (error != nil) {
                 CWLogError(CallWaveLogCategoryCall, @"failed to report incoming call: %@", error);
-                pjsua_call_id boundId = call.callId;
                 [self.registry removeCallWithUUID:uuid];
+                // Read after the removal, for the same reason as the teardowns.
+                pjsua_call_id boundId = call.callId;
                 if (boundId != CallWaveSIPCallIdInvalid) {
                     [self performSIPAsync:^{
                         [self endSIPCall:boundId
@@ -3012,9 +3308,13 @@ forCallWithUUID:(NSUUID *)uuid
             // tombstone so neither that push nor its late INVITE can ring.
             call = [self.registry registerCallWithUUID:uuid];
         }
-        if (call.callId == CallWaveSIPCallIdInvalid) {
-            [self.registry markCallCancelledBeforeInvite:uuid];
-        } else {
+        // The mark refuses a call that already has a SIP id, which PJSIP's
+        // thread may have bound since the lookup above; that one is ended.
+        BOOL awaitingInvite = [self.registry markCallCancelledBeforeInvite:uuid] ||
+                              call.isCancelledBeforeInvite;
+        if (awaitingInvite) {
+            [self failAnswerRequestsForUUID:uuid reason:@"was retracted by the server"];
+        } else if (call.callId != CallWaveSIPCallIdInvalid) {
             pjsua_call_id callId = call.callId;
             [self performSIPAsync:^{
                 [self endSIPCall:callId
@@ -3026,7 +3326,7 @@ forCallWithUUID:(NSUUID *)uuid
                   CWRedact(uuid.UUIDString));
         [self reportCallEndedWithUUID:uuid reason:reason];
         [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
-        if (call.callId == CallWaveSIPCallIdInvalid) {
+        if (awaitingInvite) {
             // Keep the cancelled record until a late INVITE is refused.
             call.state = CallWaveCallStateEnded;
             [self detachCurrentCallIfItIs:uuid];
@@ -3051,6 +3351,12 @@ forCallWithUUID:(NSUUID *)uuid
         }
         CWLogInfo(CallWaveLogCategoryCall, @"call %@ rang for %.0fs without an answer",
                   uuid.UUIDString, timeout);
+        [self reportCallEndedWithUUID:uuid reason:CXCallEndedReasonUnanswered];
+        [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
+        [self clearCallWithUUID:uuid];
+        // Read once the record is gone: PJSIP's thread binds INVITEs without
+        // this queue, so one bound before the removal shows up here, and none
+        // can be bound to the call after it.
         pjsua_call_id callId = call.callId;
         if (callId != CallWaveSIPCallIdInvalid) {
             [self performSIPAsync:^{
@@ -3059,9 +3365,6 @@ forCallWithUUID:(NSUUID *)uuid
                           reason:@"ring timeout"];
             }];
         }
-        [self reportCallEndedWithUUID:uuid reason:CXCallEndedReasonUnanswered];
-        [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
-        [self clearCallWithUUID:uuid];
     });
 }
 
@@ -3086,6 +3389,8 @@ forCallWithUUID:(NSUUID *)uuid
 
 - (void)providerDidReset:(CXProvider *)provider {
     NSArray<CallWaveCall *> *calls = [self.registry removeAllCalls];
+    [self failAnswerRequests:[self.registry takeAllAnswerRequests]
+                      reason:@"was dropped by a CallKit provider reset"];
     [self performSIPAsync:^{
         for (CallWaveCall *call in calls) {
             [self endSIPCall:call.callId
@@ -3123,8 +3428,14 @@ forCallWithUUID:(NSUUID *)uuid
 
 - (void)provider:(CXProvider *)provider performEndCallAction:(CXEndCallAction *)action {
     CallWaveCall *call = [self.registry callForUUID:action.callUUID];
-    pjsua_call_id callId = call != nil ? call.callId : CallWaveSIPCallIdInvalid;
     BOOL ringing = call != nil && call.state == CallWaveCallStateIncoming;
+    [action fulfill];
+    [self publishCallState:CallWaveCallStateEnded forUUID:action.callUUID];
+    [self clearCallWithUUID:action.callUUID];
+    // Read once the record is gone: PJSIP's thread binds INVITEs without this
+    // queue, so one bound before the removal shows up here, and none can be
+    // bound to the call after it.
+    pjsua_call_id callId = call != nil ? call.callId : CallWaveSIPCallIdInvalid;
     if (callId != CallWaveSIPCallIdInvalid) {
         [self performSIPAsync:^{
             // -endSIPCall: picks `603 Decline` or BYE from the INVITE state
@@ -3136,9 +3447,6 @@ forCallWithUUID:(NSUUID *)uuid
                                      : @"ended from the CallKit screen"];
         }];
     }
-    [action fulfill];
-    [self publishCallState:CallWaveCallStateEnded forUUID:action.callUUID];
-    [self clearCallWithUUID:action.callUUID];
 }
 
 - (void)provider:(CXProvider *)provider performSetMutedCallAction:(CXSetMutedCallAction *)action {
@@ -3199,18 +3507,39 @@ forCallWithUUID:(NSUUID *)uuid
 
 #pragma mark - PJSIP callback handling
 
-- (void)handleIncomingSIPCall:(pjsua_call_id)callId caller:(NSString *)caller {
-    dispatchMain(^{
-        CallWaveCall *pending = [self.registry callAwaitingInvite];
-        if (pending != nil) {
-            // The push already created the CallKit call; bind the INVITE to it.
-            [self.registry bindCallId:callId toUUID:pending.uuid];
-            if (pending.caller.length == 0 || [pending.caller isEqualToString:self.defaultCallerName]) {
-                pending.caller = caller;
-                pending.displayName = [self displayNameForCaller:caller];
-            }
-            [self.callStateMachine adoptCurrentCall:pending];
-            [self publishCallState:CallWaveCallStateIncoming forUUID:pending.uuid];
+/// Runs on PJSIP's thread, straight from `on_incoming_call`. The binding of
+/// the INVITE to the push's UUID happens here, under the registry lock, so an
+/// answer the host already asked for goes out from the SIP queue without ever
+/// waiting for the main queue; only the published state goes through it.
+- (void)handleIncomingSIPCall:(pjsua_call_id)callId
+                       caller:(NSString *)caller
+                   receivedAt:(uint64_t)receivedAt {
+    NSArray<CallWaveAnswerRequest *> *requests = nil;
+    CallWaveCall *pending = [self.registry bindCallIdToCallAwaitingInvite:callId
+                                                           answerRequests:&requests];
+    if (pending != nil) {
+        [self noteInviteBoundToCall:pending receivedAt:receivedAt callId:callId requests:requests];
+        // Queued before the answer, so `incoming` always reaches the main
+        // queue ahead of the `connecting` that the answer publishes.
+        dispatchMainMeasured(CallWaveLogCategoryCall, @"the INVITE", receivedAt, ^{
+            [self adoptBoundIncomingCall:pending caller:caller];
+        });
+        [self answerCallId:callId uuid:pending.uuid requests:requests];
+        return;
+    }
+
+    dispatchMainMeasured(CallWaveLogCategoryCall, @"the INVITE", receivedAt, ^{
+        // A push may have registered its call since the look above.
+        NSArray<CallWaveAnswerRequest *> *lateRequests = nil;
+        CallWaveCall *late = [self.registry bindCallIdToCallAwaitingInvite:callId
+                                                            answerRequests:&lateRequests];
+        if (late != nil) {
+            [self noteInviteBoundToCall:late
+                             receivedAt:receivedAt
+                                 callId:callId
+                               requests:lateRequests];
+            [self adoptBoundIncomingCall:late caller:caller];
+            [self answerCallId:callId uuid:late.uuid requests:lateRequests];
             return;
         }
 
@@ -3225,7 +3554,7 @@ forCallWithUUID:(NSUUID *)uuid
         CallWaveCall *call = [self.registry registerCallWithUUID:uuid];
         call.caller = caller;
         call.displayName = [self displayNameForCaller:caller];
-        [self.registry bindCallId:callId toUUID:uuid];
+        [self bindCallId:callId toUUID:uuid receivedAt:receivedAt];
         [self.callStateMachine adoptCurrentCall:call];
         [self publishCallState:CallWaveCallStateIncoming forUUID:uuid];
         id<CallWaveClientDelegate> delegate = self.delegate;
@@ -3236,12 +3565,27 @@ forCallWithUUID:(NSUUID *)uuid
     });
 }
 
+/// The main-queue half of binding an INVITE to the push's call: its caller,
+/// the current-call projection and the published state. Must run on the main
+/// queue.
+- (void)adoptBoundIncomingCall:(CallWaveCall *)call caller:(NSString *)caller {
+    if (call.caller.length == 0 || [call.caller isEqualToString:self.defaultCallerName]) {
+        call.caller = caller;
+        call.displayName = [self displayNameForCaller:caller];
+    }
+    [self.callStateMachine adoptCurrentCall:call];
+    [self publishCallState:CallWaveCallStateIncoming forUUID:call.uuid];
+}
+
 - (void)handleSIPCallConfirmed:(pjsua_call_id)callId {
+    uint64_t confirmedAt = CallWaveMonotonicNanoseconds();
     CallWaveCall *call = [self.registry callForCallId:callId];
     if (call == nil) {
         return;
     }
-    dispatchMain(^{
+    dispatchMainMeasured(CallWaveLogCategoryCall,
+                         [NSString stringWithFormat:@"the ACK of call %d", callId],
+                         confirmedAt, ^{
         [self publishCallState:call.onHold ? CallWaveCallStateHeld : CallWaveCallStateActive
                        forUUID:call.uuid];
     });
@@ -3256,7 +3600,9 @@ forCallWithUUID:(NSUUID *)uuid
     }
     NSUUID *uuid = call.uuid;
     CXCallEndedReason reason = endedReasonForSIPStatus(sipStatus, wasConnected);
-    dispatchMain(^{
+    dispatchMainMeasured(CallWaveLogCategoryCall,
+                         [NSString stringWithFormat:@"the end of call %d", callId],
+                         CallWaveMonotonicNanoseconds(), ^{
         [self reportCallEndedWithUUID:uuid reason:reason];
         [self publishCallState:CallWaveCallStateEnded forUUID:uuid];
         [self clearCallWithUUID:uuid];
@@ -3277,7 +3623,18 @@ forCallWithUUID:(NSUUID *)uuid
 - (void)handleRegistrationStatus:(int)status
                           active:(BOOL)active
                           reason:(NSString *)reason {
-    dispatchMain(^{
+    uint64_t now = CallWaveMonotonicNanoseconds();
+    // The un-REGISTER of a replaced account reports 200 with no session; only
+    // a registration or a rejection is the outcome of the login.
+    if (active || status >= 300) {
+        uint64_t loginStartedAt = atomic_exchange(&_loginStartedAt, 0);
+        if (loginStartedAt != 0) {
+            CWLogInfo(CallWaveLogCategorySIP, @"%@ %.0f ms after login",
+                      active ? @"registered" : [NSString stringWithFormat:@"registration failed (%d)", status],
+                      CallWaveMillisecondsBetween(loginStartedAt, now));
+        }
+    }
+    dispatchMainMeasured(CallWaveLogCategorySIP, @"the registration state", now, ^{
         CallWaveRegistrationState state;
         NSError *error = nil;
         if (active) {
@@ -3544,6 +3901,7 @@ withCompletionHandler:(void (^)(void))completion {
 static void onIncomingCall(pjsua_acc_id accId, pjsua_call_id callId, pjsip_rx_data *rdata) {
     PJ_UNUSED_ARG(accId);
     PJ_UNUSED_ARG(rdata);
+    uint64_t receivedAt = CallWaveMonotonicNanoseconds();
 
     CallWaveClient *client = gActiveClient;
     if (client == nil) {
@@ -3576,7 +3934,7 @@ static void onIncomingCall(pjsua_acc_id accId, pjsua_call_id callId, pjsip_rx_da
     if (pjsua_call_get_info(callId, &info) == PJ_SUCCESS) {
         caller = stringFromPJString(info.remote_info);
     }
-    [client handleIncomingSIPCall:callId caller:caller];
+    [client handleIncomingSIPCall:callId caller:caller receivedAt:receivedAt];
 }
 
 static void onCallState(pjsua_call_id callId, pjsip_event *event) {

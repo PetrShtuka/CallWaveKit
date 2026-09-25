@@ -4,12 +4,16 @@
 #import "CallWaveError.h"
 #import "CallWaveLogInternal.h"
 
+#import "CallWaveAnswerTimeline.h"
+
 #import <AVFoundation/AVFoundation.h>
 #import <os/lock.h>
 
 /// Delay before the manual session activation that covers CallKit never
-/// delivering `didActivateAudioSession` (cold start from the lock screen).
-static const NSTimeInterval CallWaveAudioFallbackDelay = 1.5;
+/// delivering `didActivateAudioSession` (cold start from the lock screen). The
+/// value predates any measurement of how late CallKit's own activation
+/// actually arrives; the answer timeline logs exist to replace it with one.
+const NSTimeInterval CallWaveDefaultAudioActivationFallbackDelay = 1.5;
 
 static void callWaveAudioDispatchMain(dispatch_block_t block) {
     if (NSThread.isMainThread) {
@@ -29,6 +33,24 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
     CallWaveAudioRoute *_currentAudioRoute;
     BOOL _audioSessionActive;
     BOOL _desiredSpeakerEnabled;
+    NSTimeInterval _activationFallbackDelay;
+    /// When the fallback last activated the session, so a `didActivate` that
+    /// still follows can say how late it was. 0 when there is none to report.
+    uint64_t _fallbackActivatedAt;
+    dispatch_queue_t _fallbackQueue;
+}
+
+- (NSTimeInterval)activationFallbackDelay {
+    os_unfair_lock_lock(&_stateLock);
+    NSTimeInterval value = _activationFallbackDelay;
+    os_unfair_lock_unlock(&_stateLock);
+    return value;
+}
+
+- (void)setActivationFallbackDelay:(NSTimeInterval)activationFallbackDelay {
+    os_unfair_lock_lock(&_stateLock);
+    _activationFallbackDelay = activationFallbackDelay;
+    os_unfair_lock_unlock(&_stateLock);
 }
 
 - (BOOL)audioSessionActive {
@@ -68,6 +90,10 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
     self = [super init];
     if (self) {
         _stateLock = OS_UNFAIR_LOCK_INIT;
+        _activationFallbackDelay = CallWaveDefaultAudioActivationFallbackDelay;
+        _fallbackQueue = dispatch_queue_create("com.callwave.audio-fallback",
+            dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+                                                    QOS_CLASS_USER_INTERACTIVE, 0));
         _currentAudioRoute = [CallWaveAudioRoute routeForAudioSession:AVAudioSession.sharedInstance];
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(handleRouteChangeNotification:)
@@ -125,11 +151,13 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
 }
 
 - (BOOL)activateAudioSessionWithError:(NSError **)error {
+    return [self activateAudioSessionFor:CallWaveAudioActivationManual error:error];
+}
+
+- (BOOL)activateAudioSessionFor:(CallWaveAudioActivation)activation error:(NSError **)error {
     [self configureAudioSessionWithError:error];
     NSError *activationError = nil;
-    if (![AVAudioSession.sharedInstance setActive:YES
-                                      withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-                                            error:&activationError]) {
+    if (![self setSessionActiveWithError:&activationError]) {
         CWLogError(CallWaveLogCategoryAudio, @"activation failed: %@", activationError);
         if (error != NULL) {
             *error = activationError ?: CallWaveMakeError(CallWaveErrorAudioSessionFailure,
@@ -138,48 +166,85 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
         return NO;
     }
 
-    [self openSoundDevice];
+    [self openSoundDeviceAfter:activation];
     if (self.desiredSpeakerEnabled) {
-        [AVAudioSession.sharedInstance overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker
-                                                         error:NULL];
+        [self overrideOutputToSpeakerOnSession:AVAudioSession.sharedInstance];
     }
     [self publishCurrentAudioRoute];
     return YES;
 }
 
+/// Seams for the tests, which have no CallKit to activate a real session.
+- (BOOL)setSessionActiveWithError:(NSError **)error {
+    return [AVAudioSession.sharedInstance setActive:YES
+                                        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+                                              error:error];
+}
+
+- (BOOL)overrideOutputToSpeakerOnSession:(AVAudioSession *)session {
+    return [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:NULL];
+}
+
 /// Marks the session active and asks the delegate to open the PJSIP sound
-/// device and re-link the conference bridge. Safe to call more than once.
-- (void)openSoundDevice {
+/// device and re-link the conference bridge. Safe to call more than once: the
+/// second time for the same devices PJSUA keeps the device it already has
+/// open, and re-linking a linked port only restates the link.
+- (void)openSoundDeviceAfter:(CallWaveAudioActivation)activation {
     self.audioSessionActive = YES;
-    [self.delegate audioCoordinatorRequestsSoundDeviceStart:self];
+    [self.delegate audioCoordinator:self requestsSoundDeviceStartAfter:activation];
 }
 
 /// CallKit does not always deliver `didActivateAudioSession` — most often on
 /// a cold start answered from the lock screen. Activating the session manually
 /// a moment later is what keeps two-way audio working.
 - (void)scheduleAudioSessionFallback {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(CallWaveAudioFallbackDelay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (self.audioSessionActive ||
-            ![self.delegate audioCoordinatorHasTrackedCalls:self]) {
+    NSTimeInterval delay = self.activationFallbackDelay;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   _fallbackQueue, ^{
+        if (self.audioSessionActive) {
+            CWLogDebug(CallWaveLogCategoryAudio,
+                       @"the audio session is already active; the fallback is not needed");
+            return;
+        }
+        if (![self.delegate audioCoordinatorHasTrackedCalls:self]) {
             return;
         }
         CWLogWarning(CallWaveLogCategoryAudio,
-                     @"CallKit did not activate the session, activating manually");
-        [self activateAudioSessionWithError:NULL];
+                     @"CallKit did not activate the session within %.0f ms of the answer, "
+                     @"activating manually", delay * 1000.0);
+        uint64_t startedAt = CallWaveMonotonicNanoseconds();
+        if ([self activateAudioSessionFor:CallWaveAudioActivationFallback error:NULL]) {
+            os_unfair_lock_lock(&self->_stateLock);
+            self->_fallbackActivatedAt = startedAt;
+            os_unfair_lock_unlock(&self->_stateLock);
+        }
     });
 }
 
 - (void)audioSessionDidActivate:(AVAudioSession *)audioSession {
-    [self openSoundDevice];
+    os_unfair_lock_lock(&_stateLock);
+    uint64_t fallbackActivatedAt = _fallbackActivatedAt;
+    _fallbackActivatedAt = 0;
+    os_unfair_lock_unlock(&_stateLock);
+    if (fallbackActivatedAt != 0) {
+        // The number that says whether the fallback fires too early: CallKit
+        // was coming after all, just later than the fallback waited for.
+        CWLogInfo(CallWaveLogCategoryAudio,
+                  @"CallKit activated the session %.0f ms after the fallback did",
+                  CallWaveMillisecondsBetween(fallbackActivatedAt,
+                                              CallWaveMonotonicNanoseconds()));
+    }
+    [self openSoundDeviceAfter:CallWaveAudioActivationCallKit];
     if (self.desiredSpeakerEnabled) {
-        [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:NULL];
+        [self overrideOutputToSpeakerOnSession:audioSession];
     }
     [self publishCurrentAudioRoute];
 }
 
 - (void)audioSessionDidDeactivate:(AVAudioSession *)audioSession {
+    os_unfair_lock_lock(&_stateLock);
+    _fallbackActivatedAt = 0;
+    os_unfair_lock_unlock(&_stateLock);
     self.audioSessionActive = NO;
     [self.delegate audioCoordinatorRequestsSoundDeviceStop:self];
     [self publishCurrentAudioRoute];
