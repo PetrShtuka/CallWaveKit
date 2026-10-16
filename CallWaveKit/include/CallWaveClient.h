@@ -126,11 +126,15 @@ didChangeRegistrationState:(CallWaveRegistrationState)state
 /// CallKit stayed silent — which it most often does on a cold start answered
 /// from the lock screen.
 ///
-/// Defaults to 1.5 seconds. Values are clamped to `[0, 5]`; NaN restores the
-/// default. The timer runs off the main queue. When CallKit's activation still
-/// arrives after the manual one, the second activation is harmless: the sound
-/// device stays open, the conference bridge is re-linked and a speaker route
-/// the host chose is applied again.
+/// Defaults to `0`: as soon as `200 OK` is out, a session CallKit has not
+/// activated yet is activated by the client, so an answered call never waits
+/// on CallKit for its audio. Through 0.7.2 the client waited 1.5 seconds; set a
+/// positive value to give CallKit's own activation a head start again. Values
+/// are clamped to `[0, 5]`; NaN restores the default. The timer runs off the
+/// main queue. When CallKit's activation still arrives after the manual one,
+/// the second activation is harmless: the sound device stays open, the
+/// conference bridge is re-linked and a speaker route the host chose is
+/// applied again.
 @property (nonatomic, assign) NSTimeInterval audioActivationFallbackDelay;
 
 /// How long an unanswered incoming call is allowed to ring before the client

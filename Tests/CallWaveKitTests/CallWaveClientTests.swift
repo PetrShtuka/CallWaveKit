@@ -104,7 +104,8 @@ final class CallWaveClientPropertyTests: XCTestCase {
     func testAudioActivationFallbackDelayDefaultsAndClamps() {
         let client = makeClient()
 
-        XCTAssertEqual(client.audioActivationFallbackDelay, 1.5, accuracy: 0.0001)
+        // No wait for CallKit by default; through 0.7.2 it was 1.5 s.
+        XCTAssertEqual(client.audioActivationFallbackDelay, 0, accuracy: 0.0001)
 
         client.audioActivationFallbackDelay = 0.4
         XCTAssertEqual(client.audioActivationFallbackDelay, 0.4, accuracy: 0.0001)
@@ -118,9 +119,10 @@ final class CallWaveClientPropertyTests: XCTestCase {
         client.audioActivationFallbackDelay = 60
         XCTAssertEqual(client.audioActivationFallbackDelay, 5, accuracy: 0.0001)
 
-        // NaN is a programming error, not a request for an instant fallback.
+        // NaN is a programming error and falls back to the default.
+        client.audioActivationFallbackDelay = 0.4
         client.audioActivationFallbackDelay = .nan
-        XCTAssertEqual(client.audioActivationFallbackDelay, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(client.audioActivationFallbackDelay, 0, accuracy: 0.0001)
     }
 
     func testIncomingCallTimeoutTreatsNonPositiveValuesAsDisabled() {

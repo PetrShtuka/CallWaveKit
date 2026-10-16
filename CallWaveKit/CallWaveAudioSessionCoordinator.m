@@ -10,10 +10,12 @@
 #import <os/lock.h>
 
 /// Delay before the manual session activation that covers CallKit never
-/// delivering `didActivateAudioSession` (cold start from the lock screen). The
-/// value predates any measurement of how late CallKit's own activation
-/// actually arrives; the answer timeline logs exist to replace it with one.
-const NSTimeInterval CallWaveDefaultAudioActivationFallbackDelay = 1.5;
+/// delivering `didActivateAudioSession` (cold start from the lock screen).
+/// None by default: once `200 OK` is out, a session CallKit has not activated
+/// yet is activated at once rather than leaving the answered call silent while
+/// waiting for CallKit. CallKit's own activation, when it still follows, is a
+/// harmless second one.
+const NSTimeInterval CallWaveDefaultAudioActivationFallbackDelay = 0;
 
 static void callWaveAudioDispatchMain(dispatch_block_t block) {
     if (NSThread.isMainThread) {
@@ -209,9 +211,15 @@ static void callWaveAudioDispatchMain(dispatch_block_t block) {
         if (![self.delegate audioCoordinatorHasTrackedCalls:self]) {
             return;
         }
-        CWLogWarning(CallWaveLogCategoryAudio,
-                     @"CallKit did not activate the session within %.0f ms of the answer, "
-                     @"activating manually", delay * 1000.0);
+        if (delay > 0) {
+            CWLogWarning(CallWaveLogCategoryAudio,
+                         @"CallKit did not activate the session within %.0f ms of the answer, "
+                         @"activating manually", delay * 1000.0);
+        } else {
+            // The expected path with no fallback delay, so not a warning.
+            CWLogInfo(CallWaveLogCategoryAudio,
+                      @"activating the audio session with the answer, ahead of CallKit");
+        }
         uint64_t startedAt = CallWaveMonotonicNanoseconds();
         if ([self activateAudioSessionFor:CallWaveAudioActivationFallback error:NULL]) {
             os_unfair_lock_lock(&self->_stateLock);

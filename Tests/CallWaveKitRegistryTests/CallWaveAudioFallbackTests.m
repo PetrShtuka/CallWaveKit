@@ -139,7 +139,23 @@
 
 - (void)testTheDefaultDelayIsTheOneDocumented {
     XCTAssertEqualWithAccuracy([CallWaveAudioSessionCoordinator new].activationFallbackDelay,
-                               1.5, 0.0001);
+                               0, 0.0001);
+}
+
+/// With no delay the session is activated straight after the answer, and that
+/// is the normal path rather than a warning.
+- (void)testWithoutADelayTheSessionIsActivatedWithTheAnswer {
+    XCTAssertEqual(self.audio.activationFallbackDelay, 0);
+    self.probe.fallbackFired = [self expectationWithDescription:@"fallback"];
+    uint64_t scheduledAt = CallWaveMonotonicNanoseconds();
+
+    [self.audio scheduleAudioSessionFallback];
+
+    [self waitForExpectations:@[self.probe.fallbackFired] timeout:2];
+    XCTAssertLessThan(CallWaveMillisecondsBetween(scheduledAt, self.probe.fallbackAt), 100.0);
+    XCTAssertTrue(self.audio.audioSessionActive);
+    XCTAssertTrue([self.log sawMessageContaining:@"ahead of CallKit"]);
+    XCTAssertFalse([self.log sawMessageContaining:@"did not activate the session within"]);
 }
 
 - (void)testTheFallbackActivatesTheSessionAfterTheConfiguredDelay {

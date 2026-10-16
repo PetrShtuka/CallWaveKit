@@ -261,39 +261,43 @@ queue in that order and `logout()` waits for what `endCall` started.
 ## Answering: waiting for the INVITE, then letting the PBX settle
 
 PushKit routinely wakes the app before the SIP INVITE. `acceptCall(uuid:…)`
-polls for the call until `answerTimeout` (10 seconds by default) and then fails
-with `CallWaveErrorTimedOut`, so the CallKit action can be fulfilled immediately
+does not wait for it: when the INVITE is already bound `200 OK` goes out from
+the SIP queue at once, and otherwise it goes out the moment the INVITE is
+bound. Neither path goes through the main queue. If no INVITE arrives within
+`answerTimeout` (10 seconds by default) the answer fails with
+`CallWaveErrorTimedOut`, so the CallKit action can be fulfilled immediately
 instead of being held past CallKit's own deadline. In library-owned mode
 `performAnswerCallAction:` already does exactly that.
 
-Once the call is found, the answer waits out `acceptDelay` before `200 OK` goes
-out. Intercom PBXs are not always ready to accept the answer the moment they
-have sent the INVITE, and answering too early tears the call down:
+There is no pause before `200 OK` unless the host asks for one with
+`acceptDelay`, for a PBX that tears the call down when answered the moment it
+has sent the INVITE:
 
 ```swift
-calls.acceptDelay = 0.5   // the default
+calls.acceptDelay = 0     // the default; 0.5 through 0.7.2
 ```
 
-Values are clamped to `[0, 1.0]`. The 0.5 default is the pause the previous
-linphone-based implementation used; the one-second ceiling exists because
-CallKit already shows the call as connected while the pause runs, so a longer
-one reads to the user as a call that does not work. Set `0` to answer as soon
-as the INVITE is seen — that path adds no dispatch hop at all.
+Values are clamped to `[0, 1.0]`: CallKit already shows the call as connected
+while the pause runs, so a longer one reads to the user as a call that does not
+work. The pause is timed on the SIP queue.
 
-The pause is applied once per call and only after the INVITE has been found. It
-is not part of `answerTimeout`: an expired timeout stops the wait for the
-INVITE, it does not cancel a pause already under way. When the intercom cancels
-the call during the pause, the answer is skipped and the completion reports
-`CallWaveErrorNoActiveCall`.
+When the intercom cancels the call, or the host ends it, before `200 OK` has
+gone out, the answer is skipped and the completion reports
+`CallWaveErrorNoActiveCall` — at once, not after `answerTimeout`.
 
-Both intervals are logged at `CallWaveLogLevelInfo`, under the subsystem
-`com.callwave.kit` and the category `call`, so a PBX that needs a different
-value can be measured from the device console:
+Every step from the answer to two-way audio is logged at
+`CallWaveLogLevelInfo`, under the subsystem `com.callwave.kit` and the category
+`call`, in milliseconds from `acceptCall` (negative for what happened before
+it):
 
 ```
-INVITE for call 5E2C… observed after 1840 ms, settle delay 500 ms
-answering call 5E2C… after a 500 ms settle delay
-200 OK sent for call 0
+answer timeline 5E2C…: acceptCall, INVITE not received yet
+answer timeline 5E2C…: INVITE for call 0 received +1840 ms, bound +1840 ms (0.1 ms later)
+answer timeline 5E2C…: 200 OK sent +1842 ms
+answer timeline 5E2C…: media active +1843 ms (waiting for the audio session: CallKit or the fallback)
+answer timeline 5E2C…: audio session active +1844 ms (fallback)
+answer timeline 5E2C…: audio connected +1850 ms
+answer timeline 5E2C… summary: INVITE received +1840 ms, INVITE bound +1840 ms, …
 ```
 
 An incoming call that nobody answers is rejected with
@@ -403,8 +407,12 @@ round-trip-time values above.
 ## Audio session
 
 CallKit does not always deliver `didActivate` — most often on a cold start
-answered from the lock screen. The library activates the session itself 1.5
-seconds after answering when that happens, and the same primitives are public:
+answered from the lock screen. The library does not wait for it: once `200 OK`
+is out, a session CallKit has not activated yet is activated by the library at
+once. `audioActivationFallbackDelay` (`0` by default, 1.5 seconds through
+0.7.2) gives CallKit a head start again if a deployment needs one; a
+`didActivate` that still arrives later is a harmless second activation. The
+same primitives are public:
 
 ```swift
 try calls.configureAudioSession()   // category and mode, no activation

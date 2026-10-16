@@ -40,6 +40,8 @@ static const NSTimeInterval CallWaveDefaultAcceptDelay = 0;
 static const NSTimeInterval CallWaveMaximumAcceptDelay = 1.0;
 /// Past this the fallback stops being a fallback: the user would be looking at
 /// a connected call with no audio for more than five seconds.
+/// `CallWaveDefaultAudioActivationFallbackDelay` itself lives with the audio
+/// coordinator that runs the timer.
 static const NSTimeInterval CallWaveMaximumAudioActivationFallbackDelay = 5.0;
 static const NSTimeInterval CallWaveDefaultAnswerTimeout = 10.0;
 static const NSTimeInterval CallWaveDefaultIncomingCallTimeout = 60.0;
